@@ -1,0 +1,30 @@
+# Fast gate only — checks, never fixes. Slow tier (pytest, pip-audit) lives in
+# `make checkall`. `--locked` keeps uv from rewriting uv.lock.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --locked ruff check .
+        language: system
+        pass_filenames: false
+      - id: ruff-format
+        name: ruff format (check only)
+        entry: uv run --locked ruff format --check .
+        language: system
+        pass_filenames: false
+      - id: mypy
+        name: mypy
+        entry: uv run --locked mypy
+        language: system
+        pass_filenames: false
+      - id: import-linter
+        name: import-linter
+        entry: uv run --locked lint-imports
+        language: system
+        pass_filenames: false
+      - id: deptry
+        name: deptry
+        entry: uv run --locked deptry src
+        language: system
+        pass_filenames: false

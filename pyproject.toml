@@ -1,0 +1,59 @@
+[project]
+name = "fronta"
+version = "0.1.0"
+description = "Distributed task queue for asyncio tasks and sandboxed processes"
+readme = "README.md"
+authors = [
+    { name = "Ondrej", email = "ondrej@ilcik.com" }
+]
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.5.0",
+]
+
+[project.scripts]
+fronta = "fronta.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.18,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "deptry>=0.25.1",
+    "import-linter>=2.14",
+    "mypy>=2.3.1",
+    "pip-audit>=2.10.1",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "ruff>=0.16.5",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "S", "B", "C4", "UP", "D", "PT",
+    "RUF", "ANN", "SIM", "TC", "ARG", "ERA", "PL", "PTH", "DTZ", "T20",
+]
+ignore = ["D1"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "D", "ANN", "PLR2004"]
+
+[tool.mypy]
+strict = true
+packages = ["fronta"]
+mypy_path = "src"
+
+[tool.importlinter]
+root_package = "fronta"
+
+[tool.deptry]
+# Add per-rule ignores only with a justifying comment.
