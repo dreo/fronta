@@ -61,8 +61,11 @@ jobs:
       # namespaces once the AppArmor restriction is lifted for this session.
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-      # The committed lock must match pyproject.toml; `highest` installs exactly the lock.
+      # The committed lock must match pyproject.toml (it is a highest-resolution lock, so the
+      # check runs in that mode on every leg); `highest` installs exactly the lock.
       - run: uv lock --check
+        env:
+          UV_RESOLUTION: highest
       - if: matrix.resolution == 'highest'
         run: uv sync --all-extras --locked
       # uv re-resolves when the lock was made with another resolution mode (probed: the
@@ -72,11 +75,14 @@ jobs:
       - run: uv run playwright install --with-deps chromium
       # The exact command required before handoff — no separate CI logic, no drift.
       - if: matrix.resolution == 'highest'
-        run: make checkall
+        run: make checkall 2>&1 | tee gate.log
       # The floors are compatibility statements, not what we ship: old versions carry known
       # advisories, so this leg runs the gate and the suite without the audit (see Makefile).
       - if: matrix.resolution != 'highest'
-        run: make check test
+        run: make check test 2>&1 | tee gate.log
+      # Failing tests as annotations: visible on the run page and through the API.
+      - if: failure()
+        run: grep -E "^(FAILED|ERROR) " gate.log | sed 's/^/::error::/' || true
       # The artifacts a user installs: the wheel base (SDK + worker) and with the server extra,
       # and the sdist.
       - run: uv build --no-sources
