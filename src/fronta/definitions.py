@@ -115,8 +115,9 @@ class TaskDefinition[InputT: BaseModel, OutputT]:
     ) -> int:
         """Enqueue and return the task id (or the id of the active task with the same key).
 
-        With `conn` the insert joins the caller's transaction (never committed by Fronta);
-        without it the process-global pool is used and the insert is committed here.
+        With a non-autocommit `conn` the insert joins the caller's transaction (never committed by
+        Fronta). An autocommit connection gets one transaction for the insert and notifications.
+        Without `conn` the process-global pool is used and the insert is committed here.
         """
         settings = runtime.get_settings()
         new_task = NewTask(
@@ -130,6 +131,9 @@ class TaskDefinition[InputT: BaseModel, OutputT]:
         )
         deadline = settings.statement_timeout_s
         if conn is not None:
+            if conn.autocommit:
+                async with conn.transaction():
+                    return await store.enqueue(conn, new_task, deadline_s=deadline)
             return await store.enqueue(conn, new_task, deadline_s=deadline)
         pool = await runtime.open_pool()
         async with pool.connection() as own_conn, own_conn.transaction():

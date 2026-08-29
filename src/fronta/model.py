@@ -44,6 +44,15 @@ class Executor(StrEnum):
     PROCESS = "process"
 
 
+@dataclass(frozen=True, slots=True)
+class TaskEvent:
+    """One committed task state transition from the live event broadcast."""
+
+    id: int
+    type: str
+    state: State
+
+
 def _check_finite(name: str, value: float, low: float, high: float) -> None:
     if not (isinstance(value, int | float) and math.isfinite(value) and low <= value <= high):
         msg = f"{name} must be a finite number in [{low}, {high}], got {value!r}"

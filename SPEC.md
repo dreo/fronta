@@ -4,7 +4,7 @@ Distributed task processing on PostgreSQL with sandboxed process execution.
 
 ## 1. Scope
 
-- V1: Python SDK, asyncio and sandboxed-process executors, PostgreSQL queue, worker CLI, server CLI (REST + MCP + web dashboard), db CLI.
+- V1: Python SDK (enqueue, task lookup, live lifecycle events), asyncio and sandboxed-process executors, PostgreSQL queue, worker CLI, server CLI (REST + MCP + web dashboard), db CLI.
 - Supported hosts: Linux and macOS for the SDK, server, and asyncio-only workers; Linux for workers containing process tasks.
 - Pre-deployment: breaking changes to schema and contracts are preferred over compatibility paths.
 - Non-goals: cron; workflows (no DAG engine, dependencies, or automatic triggers); non-PostgreSQL backends; non-Linux sandboxing; result streaming; multi-tenancy.
@@ -14,7 +14,7 @@ Distributed task processing on PostgreSQL with sandboxed process execution.
 - PostgreSQL 16+ is the only infrastructure. Fronta lives in the app's database, schema `fronta`.
 - Rows are the durable truth. Every state change is one transaction with a state precondition. The first committed transition wins; a write whose precondition fails affects 0 rows and the writer discards its outcome.
 - Claims use `SELECT ... FOR UPDATE SKIP LOCKED`. A running task holds a lease renewed by heartbeats. Every claim issues a fresh random execution token; every worker write (heartbeat, progress, completion, failure, release, cancel ack) requires `state = running` and the matching token. Advisory locks are not used. All timestamps (leases, run_at, finished_at) come from the database clock.
-- LISTEN/NOTIFY is only a wake-up hint; workers also poll. Channels: `fronta_wake` (new or requeued work, payload = task type), `fronta_cancel` (payload = task id), `fronta_events` (best-effort state transitions for observers).
+- LISTEN/NOTIFY is only a wake-up hint; workers also poll. Channels: `fronta_wake` (new or requeued work, payload = task type), `fronta_cancel` (payload = task id), `fronta_events` (committed live state transitions for observers, JSON `{id,type,state}`, best-effort with no replay).
 - Routing is by task type only; no named queues.
 - Delivery: a task is redelivered after lease loss until it reaches a terminal state or exhausts its retry budget. Duplicate and overlapping executions are possible (a stalled worker past its lease may still be running). Handlers must be idempotent.
 - Concurrency limits are enforced inside the claim transaction by counting running tasks under a per-type lock (section 5).
@@ -39,9 +39,16 @@ Distributed task processing on PostgreSQL with sandboxed process execution.
 ### Enqueue
 
 - `await task.enqueue(input, *, conn=None, priority=0, run_at=None, key=None, concurrency_key=None) -> int` (task id, bigint identity, monotonic).
-- With `conn`, the insert joins the caller's transaction; Fronta never commits, rolls back, or closes it. Without `conn`, Fronta's pool, autocommit.
+- With a non-autocommit `conn`, the insert joins the caller's transaction; Fronta never commits, rolls back, or closes it. With an autocommit `conn`, Fronta creates one transaction for the insert and notifications. Without `conn`, Fronta's pool creates and commits that transaction.
 - Dedupe: `key` is unique per task type among queued/running tasks (partial unique index). A duplicate returns the existing id and never mutates the existing task. If the existing row disappears between conflict and lookup, the insert is retried.
 - `ctx.enqueue()` is immediate and independent of the task's outcome; a retried task enqueues again. `key` dedupes only against queued/running tasks, so a retry after the child finished enqueues it again: make children idempotent or give them a business-level key of their own.
+
+### Lifecycle events
+
+- `async with fronta.subscribe_events(settings=None) as events` yields an async iterator of `TaskEvent(id, type, state)` after its dedicated connection is listening. `fronta.get_task(id, conn=None)` returns the latest durable `TaskRow` or raises `TaskNotFound`; it is not a snapshot at the event's transition.
+- Every committed task state transition broadcasts once from its transaction: enqueue, claim, retry, success, failure, release, queued cancellation, cancellation acknowledgement, and reaping. A rejected fenced write, rolled-back transaction, dedupe hit, heartbeat, progress update, or running cancellation request emits no state-transition event.
+- The event stream is a live best-effort notification feed, not a durable log: no replay, acknowledgement, or silent reconnect. Connection loss surfaces to the consumer. A singleton consumer avoids competing handlers but must still reconnect and reconcile its own durable state after startup, disconnection, or a crash.
+- A deterministic child enqueue key prevents duplicates only while that child is queued or running. A workflow needing durable exactly-once handling records a source-event marker in its own table and enqueues the child through the same non-autocommit psycopg connection and transaction.
 
 ### ctx
 
@@ -93,7 +100,7 @@ Distributed task processing on PostgreSQL with sandboxed process execution.
 
 ## 7. Entrypoints
 
-- SDK: section 3. Configuration via pydantic-settings, prefix `FRONTA_` (`FRONTA_DSN`, timeouts, and limits from section 10), validated at startup.
+- SDK: section 3, including enqueue, task lookup, and live lifecycle events. Configuration via pydantic-settings, prefix `FRONTA_` (`FRONTA_DSN`, timeouts, and limits from section 10), validated at startup.
 - `fronta db init`: applies `schema.sql` idempotently. No migration framework in V1.
 - `fronta worker module:attr`: `attr` is a `Worker`. Start: publish definitions, sandbox probe, orphan scavenge, LISTEN, claim loop with `concurrency` slots shared by both executors. DB connections serve short transactions only (one LISTEN connection plus a small pool); none is held during execution. Structured logs with task_id/attempt correlation.
 - `fronta server`: one FastAPI app serving REST, MCP (official `mcp` SDK, streamable HTTP), and a static dashboard hydrated with Alpine.js over the REST endpoints. Needs only the database.
@@ -114,6 +121,7 @@ Distributed task processing on PostgreSQL with sandboxed process execution.
 - Concurrency limits: 20 workers, N per type and per key → never more than N running (measured in the handlers); a SIGKILLed holder's share is free after reaping; a limit shrunk below the running count admits nothing until the count drops.
 - Cancellation: queued → cancelled at once; running → stopped within the grace period, cancelled; completed before ack → succeeded.
 - Dedupe: 20 concurrent enqueues with one key → one row; after it terminates, a new enqueue creates a new row.
+- Lifecycle events: a singleton subscriber can turn a successful source task into one deduplicated follow-up; retry and both cancellation paths produce the expected state sequences; rollback and dedupe emit nothing; leaving the subscription after an early break cannot hang.
 - Sandbox: writes outside the workdir and network connections fail; host secrets (`FRONTA_DSN`) are not visible; a process tree that ignores SIGTERM is fully killed after the grace period; SIGKILL of the worker leaves no sandboxed process behind.
 - End-to-end: `fronta db init` → worker with one asyncio and one process task → enqueue via SDK, REST, and MCP → state and result via REST and the dashboard → cancel a running task; with a token set, unauthenticated requests get 401.
 - Postgres: `FRONTA_TEST_DSN`, GitHub Actions service container.

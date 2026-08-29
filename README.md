@@ -75,13 +75,50 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`enqueue(..., conn=conn)` joins your own psycopg transaction instead of using the pool. `key`
-dedupes: while a task with the same key is queued or running, `enqueue` returns its id; once
-that task has finished, the same key enqueues a new one.
+`enqueue(..., conn=conn)` joins a non-autocommit psycopg transaction instead of using the pool;
+with an autocommit connection, Fronta wraps the row and its notifications in one transaction.
+`key` dedupes: while a task with the same key is queued or running, `enqueue` returns its id;
+once that task has finished, the same key enqueues a new one.
 
 A handler gets the validated input and a `Context` (`task_id`, `attempt`, `log`, `progress()`,
 `enqueue()`, `cancelled`, `state` from the worker lifespan). It must handle
 `asyncio.CancelledError` and be safe to run twice: after a lost lease the task runs again.
+
+## Lifecycle events
+
+External workflow code can react to committed task state transitions through the SDK:
+
+```python
+import fronta
+from app.tasks import Notify, notify
+
+
+async def run_workflow() -> None:
+    async with fronta.subscribe_events() as events:
+        async for event in events:
+            if event.type != "resize" or event.state is not fronta.State.SUCCEEDED:
+                continue
+            source = await fronta.get_task(event.id)
+            if source.input["image_id"] != 7:
+                continue
+            await notify.enqueue(
+                Notify(source_id=event.id, result=source.result),
+                key=f"workflow:{event.id}:notify",
+            )
+```
+
+Each `TaskEvent` has `id`, `type`, and `state`. Events cover committed state transitions, including
+enqueue, claim, retry, success, failure, release, cancellation, and reaping. Heartbeats, progress,
+a running task's cancellation request, rolled-back enqueues, and dedupe hits do not broadcast a
+state transition. `get_task()` returns the latest durable row, which may already be newer than the
+event being handled.
+
+The stream is a live PostgreSQL notification feed: it has no replay, acknowledgement, or silent
+reconnect. A disconnect is raised to the consumer, which should reconnect and reconcile from its
+own durable state. Running one workflow instance prevents competing consumers, but cannot prevent
+a missed event during startup or a crash. An enqueue `key` only dedupes while the child is queued
+or running; a durable workflow should record handled source events in its own table and enqueue the
+child with the same psycopg transaction via `enqueue(..., conn=conn)`.
 
 On Linux, a sandboxed process task with a placeholder executable:
 
@@ -110,10 +147,11 @@ FRONTA_SERVER_TOKEN=... fronta server      # 127.0.0.1:8000
 ```
 
 REST under `/api/v1` (task types, enqueue, get, list, cancel), MCP at `/mcp`, dashboard at `/`.
-The SDK only enqueues; inspection and cancellation go through the server. `FRONTA_SERVER_TOKEN`
-is required (the server never runs open: even on loopback a browser could be made to cancel or
-enqueue tasks); every REST and MCP request sends it as `Authorization: Bearer <token>`. Put a
-TLS-terminating reverse proxy in front of it outside a private network. Endpoints, inputs and error codes:
+The Python SDK enqueues, reads one task, and subscribes to lifecycle events; listing and
+cancellation go through the server. `FRONTA_SERVER_TOKEN` is required (the server never runs open:
+even on loopback a browser could be made to cancel or enqueue tasks); every REST and MCP request
+sends it as `Authorization: Bearer <token>`. Put a TLS-terminating reverse proxy in front of it
+outside a private network. Endpoints, inputs and error codes:
 [docs/reference.md](https://github.com/dreo/fronta/blob/main/docs/reference.md#server).
 
 ## Deploy
@@ -162,7 +200,8 @@ measurements: [docs/reference.md](https://github.com/dreo/fronta/blob/main/docs/
 
 - Exactly-once side effects: a worker stalled past its lease may still be running while the task
   is retried elsewhere; the stale attempt's writes to Fronta are rejected, its other effects are not.
-- Workflows, chains, or periodic tasks (only `run_at`).
+- A built-in workflow engine, chains, or periodic tasks (only `run_at`). A singleton external
+  consumer can implement workflows from lifecycle events.
 - Schema migrations before 1.0: a release that changes the schema needs `fronta db init` on a
   fresh schema.
 - Windows.
