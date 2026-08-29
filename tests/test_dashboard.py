@@ -6,7 +6,6 @@ Needs Playwright with a Chromium build (`uv run playwright install chromium`); s
 from __future__ import annotations
 
 import asyncio
-import socket
 
 import httpx
 import pytest
@@ -14,7 +13,7 @@ import uvicorn
 
 from fronta import Settings, Worker
 from fronta.server import create_app
-from tests.conftest import FAST, wait_until
+from tests.conftest import FAST, free_port, wait_until
 from tests.workers import progress_task, sleep_task
 
 playwright = pytest.importorskip("playwright.async_api")
@@ -22,12 +21,6 @@ playwright = pytest.importorskip("playwright.async_api")
 TOKEN = "dash-token"  # noqa: S105  # test fixture value
 TASKS = "[data-testid=tasks] tbody tr"
 DETAIL = "[data-testid=task-detail]"
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
 
 
 async def test_dashboard_workflow_in_a_browser(dsn, settings, run_worker):

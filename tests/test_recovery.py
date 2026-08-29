@@ -10,7 +10,7 @@ import time
 import pytest
 
 from fronta import Settings, State, Worker, store, task
-from tests.conftest import FAST, spawn_worker, wait_until, worker_env
+from tests.conftest import FAST, wait_until
 from tests.workers import In, sleep_task
 
 
@@ -23,22 +23,6 @@ async def get(conn, task_id):
 async def running_on(conn, task_id, worker_prefix):
     row = await get(conn, task_id)
     return row.state is State.RUNNING and (row.worker or "").startswith(worker_prefix)
-
-
-@pytest.fixture
-def subprocess_worker(settings):
-    procs = []
-
-    def start(target="tests.subworkers:crash_worker"):
-        proc = spawn_worker(target, worker_env(settings))
-        procs.append(proc)
-        return proc
-
-    yield start
-    for proc in procs:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=10)
 
 
 @pytest.mark.usefixtures("sdk")

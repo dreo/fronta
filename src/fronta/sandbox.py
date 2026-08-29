@@ -61,8 +61,10 @@ def require_linux() -> None:
 
 
 def worker_id() -> str:
-    """`host:pid:starttime` — unique per boot; `is_worker_alive` re-derives liveness from it."""
-    return f"{socket.gethostname()}:{os.getpid()}:{_starttime(os.getpid())}"
+    """`host:pid:starttime-or-nonce` — unique even on hosts without Linux `/proc`."""
+    pid = os.getpid()
+    identity = _starttime(pid) or f"nonce-{uuid4().hex}"
+    return f"{socket.gethostname()}:{pid}:{identity}"
 
 
 def _starttime(pid: int) -> str | None:
@@ -83,7 +85,18 @@ def is_worker_alive(worker: str) -> bool | None:
         pid = int(parts[1])
     except ValueError:
         return None
-    return _starttime(pid) == parts[2]
+    if pid <= 0 or parts[2].startswith("nonce-"):
+        return None
+    starttime = _starttime(pid)
+    if starttime is not None:
+        return starttime == parts[2]
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass
+    return None
 
 
 class Pidfd:
@@ -406,13 +419,13 @@ class SandboxProcess:
                 init_pidfd = Pidfd.open(init_pid)
         except BaseException:
             # Cancelled or failed while the sandbox was starting: nothing may outlive this call.
-            await _abort(proc, outer_pidfd, kill_timeout_s)
+            await _abort(proc, outer_pidfd, kill_timeout_s, sandbox_id)
             if outer_pidfd is not None:
                 outer_pidfd.close()
             raise
         if not line:
             # bwrap gave up before creating the sandbox (bad option, missing bind, no userns).
-            stderr = await _abort(proc, outer_pidfd, kill_timeout_s)
+            stderr = await _abort(proc, outer_pidfd, kill_timeout_s, sandbox_id)
             if outer_pidfd is not None:
                 outer_pidfd.close()
             msg = f"sandbox setup failed (bwrap exit {proc.returncode}): {stderr[:2000]}"
@@ -425,7 +438,7 @@ class SandboxProcess:
         if writer is None or stdout is None or stderr is None:  # pragma: no cover
             msg = "sandbox process was not spawned with pipes"
             raise RuntimeError(msg)
-        truncated = [False]
+        truncated = False
 
         async def feed() -> None:
             try:
@@ -437,13 +450,14 @@ class SandboxProcess:
                 writer.close()
 
         async def drain(stream: asyncio.StreamReader) -> bytes:
+            nonlocal truncated
             kept = bytearray()
             while chunk := await stream.read(65536):
                 room = max_output - len(kept)
                 if room > 0:
                     kept += chunk[:room]
                 if len(chunk) > room:
-                    truncated[0] = True
+                    truncated = True
             return bytes(kept)
 
         try:
@@ -467,7 +481,7 @@ class SandboxProcess:
             exit_code=exit_code,
             stdout=_text(out),
             stderr=_text(err),
-            truncated=truncated[0],
+            truncated=truncated,
         )
 
     def terminate(self) -> int:
@@ -518,7 +532,10 @@ class SandboxProcess:
 
 
 async def _abort(
-    proc: asyncio.subprocess.Process, outer_pidfd: Pidfd | None, timeout_s: float
+    proc: asyncio.subprocess.Process,
+    outer_pidfd: Pidfd | None,
+    timeout_s: float,
+    sandbox_id: str,
 ) -> str:
     """SIGKILL a starting sandbox (outer bwrap; the init dies with it) and reap it; stderr text.
 
@@ -530,6 +547,10 @@ async def _abort(
     if proc.returncode is None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
+    # A configured bwrap wrapper or bwrap's init can outlive the outer process. This is especially
+    # important before --die-with-parent is armed: kill every descendant under its UUID-scoped
+    # marker, using the same pidfd/recheck protocol as established sandboxes.
+    signal_marked(SANDBOX_ENV, sandbox_id, signal.SIGKILL)
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(proc.wait(), timeout_s)
     if proc.stderr is None:

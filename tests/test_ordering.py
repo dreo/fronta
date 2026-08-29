@@ -163,14 +163,17 @@ async def test_two_concurrent_reapers_charge_exactly_one_failure(conn, dsn):
 
 async def test_retry_delay_is_computed_by_the_database_from_the_snapshot(conn):
     rows = await setup(conn, 20, max_attempts=3, backoff=Backoff(1.0, 2.0, 10.0))
-    for row in rows:
-        assert await store.fail(conn, row.id, row.token, "{}", retry=True) is State.QUEUED
-    cur = await conn.execute(
-        "SELECT extract(epoch FROM run_at - now()) FROM fronta.tasks WHERE state = 'queued'"
-    )
-    delays = [float(r[0]) for r in await cur.fetchall()]
+    # PostgreSQL's now() is fixed at the outer transaction start, so sequential test work cannot
+    # erode the earliest delay before it is measured on a busy runner.
+    async with conn.transaction():
+        for row in rows:
+            assert await store.fail(conn, row.id, row.token, "{}", retry=True) is State.QUEUED
+        cur = await conn.execute(
+            "SELECT extract(epoch FROM run_at - now()) FROM fronta.tasks WHERE state = 'queued'"
+        )
+        delays = [float(r[0]) for r in await cur.fetchall()]
     low, high = rows[0].backoff.delay_bounds(1)
-    assert all(low - 0.2 <= d <= high for d in delays)
+    assert all(low <= d <= high for d in delays)
     assert len({round(d, 3) for d in delays}) > 1  # jitter is real
 
 

@@ -20,7 +20,7 @@ from fronta.worker import Worker
 
 log = logging.getLogger(__name__)
 
-SERVER_EXTRA_MODULES = frozenset({"fastapi", "starlette", "uvicorn", "jinja2", "mcp", "jsonschema"})
+SERVER_EXTRA_MODULES = frozenset({"fastapi", "starlette", "uvicorn", "mcp", "jsonschema"})
 """Top-level modules provided by the `server` extra."""
 
 

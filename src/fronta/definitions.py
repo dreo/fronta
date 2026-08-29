@@ -131,7 +131,7 @@ class TaskDefinition[InputT: BaseModel, OutputT]:
         deadline = settings.statement_timeout_s
         if conn is not None:
             return await store.enqueue(conn, new_task, deadline_s=deadline)
-        pool = await runtime.get_pool()
+        pool = await runtime.open_pool()
         async with pool.connection() as own_conn, own_conn.transaction():
             return await store.enqueue(own_conn, new_task, deadline_s=deadline)
 

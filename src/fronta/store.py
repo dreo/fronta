@@ -109,7 +109,7 @@ _SHARE_LIMITS = _READ_LIMITS + sql.SQL(" FOR SHARE")
 _LOCK_LIMITS = _READ_LIMITS + sql.SQL(" FOR UPDATE")
 
 _COUNT_RUNNING = sql.SQL("""
-SELECT count(*) FILTER (WHERE TRUE) AS by_type,
+SELECT count(*) AS by_type,
        count(*) FILTER (WHERE concurrency_key IS NOT DISTINCT FROM %(key)s) AS by_key
 FROM fronta.tasks WHERE type = %(type)s AND state = 'running'
 """)

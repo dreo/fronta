@@ -12,7 +12,8 @@ keys, retries with jittered backoff and concurrency limits (per task type and pe
 in the database; attempt timeouts and cancellation by the worker.
 
 **Status:** alpha. The API and the schema can change between minor versions before 1.0 (see
-`CHANGELOG.md`). Linux, Python 3.12–3.14, PostgreSQL 16+.
+`CHANGELOG.md`). Linux or macOS, Python 3.12–3.14, PostgreSQL 16+. Sandboxed process workers
+require Linux.
 
 ## Install
 
@@ -21,8 +22,9 @@ uv add fronta               # SDK + worker
 uv add "fronta[server]"     # + REST/MCP server and dashboard
 ```
 
-`pip install fronta` works the same. Hosts that run sandboxed processes need `bwrap` (bubblewrap),
-`prlimit` (util-linux) and unprivileged user namespaces; `import fronta` and the SDK work anywhere.
+`pip install fronta` works the same. The SDK, server, and workers containing only asyncio tasks are
+supported on Linux and macOS. A worker containing any process task needs Linux, `bwrap`
+(bubblewrap), `prlimit` (util-linux), and unprivileged user namespaces.
 
 ## Example
 
@@ -81,7 +83,7 @@ A handler gets the validated input and a `Context` (`task_id`, `attempt`, `log`,
 `enqueue()`, `cancelled`, `state` from the worker lifespan). It must handle
 `asyncio.CancelledError` and be safe to run twice: after a lost lease the task runs again.
 
-A sandboxed process task, with a placeholder executable:
+On Linux, a sandboxed process task with a placeholder executable:
 
 ```python
 class Convert(BaseModel):
@@ -163,7 +165,9 @@ measurements: [docs/reference.md](https://github.com/dreo/fronta/blob/main/docs/
 - Workflows, chains, or periodic tasks (only `run_at`).
 - Schema migrations before 1.0: a release that changes the schema needs `fronta db init` on a
   fresh schema.
-- Windows or macOS workers: sandboxes are Linux-only and nothing else is tested there.
+- Windows.
+- Sandboxed process tasks on macOS. A worker containing one fails its startup check with a clear
+  platform error; run that worker on Linux.
 
 ## Development
 
@@ -176,10 +180,12 @@ make check       # lint, format, types, architecture, deps (also the git pre-com
 make checkall    # check + the full test suite + pip-audit
 ```
 
-CI runs `make checkall` on every pull request and push to `main`, on Python 3.12–3.14 and at the
-lowest dependency versions the declared bounds allow. To release: set the version (`uv version X.Y.Z`), add the CHANGELOG
-section, merge, then push the tag `vX.Y.Z` from that `main` commit; the gate runs again, the
-package goes to PyPI and a GitHub release is created. `SPEC.md` is the contract.
+CI runs the full `make checkall` gate once on every pull request and push to `main`; compatibility
+legs cover Python 3.12–3.14, lower dependency bounds, real Linux process sandboxes, and the
+portable SDK, asyncio worker, and server on macOS without repeating the stress/browser tiers. To
+release: set the version (`uv version X.Y.Z`), add the
+CHANGELOG section, merge, then push the tag `vX.Y.Z` from that `main` commit; the gate runs again,
+the package goes to PyPI and a GitHub release is created. `SPEC.md` is the contract.
 
 ## License
 

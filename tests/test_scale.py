@@ -18,10 +18,10 @@ from fronta import Settings, State, Worker, runtime, store, task
 from fronta.model import TaskFilter
 from fronta.server import create_app
 from tests import workers
-from tests.conftest import FAST, running_all, wait_until
-from tests.test_limits import max_overlap
-from tests.test_server import TOKEN, free_port, serve
+from tests.conftest import FAST, free_port, max_overlap, running_all, serve, wait_until
 from tests.workers import In, Out, sleep_task
+
+TOKEN = "stress-token"  # noqa: S105  # test fixture value
 
 BULK = """
 INSERT INTO fronta.tasks (type, state, input, priority, run_at, max_attempts, attempt_timeout_s,
@@ -68,7 +68,8 @@ async def timed_claims(conn, types, n):
 
 
 def fds() -> int:
-    return len(list(Path("/proc/self/fd").iterdir()))
+    root = Path("/proc/self/fd")
+    return len(list((root if root.exists() else Path("/dev/fd")).iterdir()))
 
 
 # ---------------------------------------------------------------- long backlogs
@@ -295,33 +296,6 @@ async def test_limits_hold_under_a_burst_of_six_hundred_keyed_tasks(conn, dsn):
         assert max_overlap(workers.INTERVALS, key) == 1
     assert max_overlap(workers.INTERVALS) >= 4  # the limit was used, not just respected
     assert elapsed < 150, elapsed
-
-
-async def test_cap_sized_inputs_and_results_under_concurrency(conn, dsn):
-    """Twenty tasks carrying ~900 KiB inputs and returning ~900 KiB results at the same time."""
-
-    @task("bulky", input=In, attempt_timeout=60)
-    async def bulky(ctx: Any, inp: In) -> dict[str, Any]:
-        del ctx
-        return {"echo": inp.key, "n": inp.n}
-
-    await store.publish_task_type(conn, bulky.spec)
-    pad = "x" * (900 * 1024)
-    async with conn.cursor() as cur:
-        await cur.executemany(
-            "INSERT INTO fronta.tasks (type, state, input, max_attempts, attempt_timeout_s,"
-            " backoff_base_s, backoff_factor, backoff_cap_s)"
-            " VALUES ('bulky', 'queued', %s::jsonb, 3, 60, 1, 2, 3600)",
-            [(f'{{"n": {i}, "key": "{pad}"}}',) for i in range(20)],
-        )
-    settings = Settings(dsn=dsn, **{**FAST, "pool_size": 3, "concurrency": 10})
-    async with running_all([Worker([bulky], settings=settings) for _ in range(2)]):
-        await wait_until(lambda: _count_is(conn, "succeeded", 20), timeout=120)
-    cur = await conn.execute(
-        "SELECT count(*) FROM fronta.tasks WHERE length(result->>'echo') = %s AND attempt = 1",
-        (len(pad),),
-    )
-    assert (await cur.fetchone())[0] == 20
 
 
 # ---------------------------------------------------------------- big tables

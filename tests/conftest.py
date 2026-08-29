@@ -12,21 +12,24 @@ import asyncio
 import contextlib
 import os
 import secrets
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import psycopg
 import pytest
 import pytest_asyncio
+import uvicorn
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from fronta import Settings, Worker, runtime, sandbox, store
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
 MAINT_DSN = os.environ.get("FRONTA_TEST_DSN")
 REPO = Path(__file__).resolve().parent.parent
@@ -53,7 +56,7 @@ def _require_dsn() -> str:
 
 
 @pytest.fixture(scope="session")
-def test_dsn() -> AsyncIterator[str]:
+def test_dsn() -> Iterator[str]:
     maint = _require_dsn()
     name = f"fronta_test_{secrets.token_hex(4)}"
     with psycopg.connect(maint, autocommit=True) as conn:
@@ -66,7 +69,7 @@ def test_dsn() -> AsyncIterator[str]:
 
     asyncio.run(init())
     try:
-        yield dsn  # type: ignore[misc]  # pytest accepts sync generator fixtures
+        yield dsn
     finally:
         with psycopg.connect(maint, autocommit=True) as conn:
             conn.execute(f'DROP DATABASE "{name}" WITH (FORCE)')
@@ -187,6 +190,47 @@ def fronta_cli() -> str:
     return str(Path(sys.executable).parent / "fronta")
 
 
+def free_port() -> int:
+    """An unused local TCP port for a test server."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+async def serve(app: Any, port: int) -> AsyncIterator[str]:
+    """Run an ASGI app under uvicorn and yield its base URL once it is reachable."""
+    instance = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    task = asyncio.create_task(instance.serve())
+    base = f"http://127.0.0.1:{port}"
+    async with httpx.AsyncClient() as client:
+        for _ in range(100):
+            try:
+                await client.get(base + "/")
+                break
+            except httpx.ConnectError:
+                await asyncio.sleep(0.05)
+    try:
+        yield base
+    finally:
+        instance.should_exit = True
+        await asyncio.wait_for(task, 20)
+
+
+def max_overlap(intervals: list[Any], key: str | None = None) -> int:
+    """Largest number of intervals (optionally of one key) running at the same instant."""
+    points = []
+    for interval in intervals:
+        if key is None or interval.key == key:
+            points.append((interval.start, 1))
+            points.append((interval.end, -1))
+    points.sort(key=lambda point: (point[0], point[1]))
+    current = peak = 0
+    for _, delta in points:
+        current += delta
+        peak = max(peak, current)
+    return peak
+
+
 def spawn_worker(target: str, env: dict[str, str]) -> subprocess.Popen[bytes]:
     """Start `fronta worker <target>` from the repository root (so `tests.workers` imports)."""
     return subprocess.Popen(  # noqa: S603  # our own CLI, fixed argv
@@ -196,3 +240,20 @@ def spawn_worker(target: str, env: dict[str, str]) -> subprocess.Popen[bytes]:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
+
+
+@pytest.fixture
+def subprocess_worker(settings: Settings) -> Iterator[Callable[..., subprocess.Popen[bytes]]]:
+    """Start subprocess workers and ensure that every one is reaped after the test."""
+    procs: list[subprocess.Popen[bytes]] = []
+
+    def start(target: str = "tests.subworkers:crash_worker", **env: str) -> subprocess.Popen[bytes]:
+        proc = spawn_worker(target, worker_env(settings, **env))
+        procs.append(proc)
+        return proc
+
+    yield start
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)

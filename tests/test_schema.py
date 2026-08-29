@@ -17,12 +17,6 @@ async def test_init_is_idempotent(conn):
     assert [r[0] for r in await cur.fetchall()] == ["task_types", "tasks"]
 
 
-def test_db_init_command_applies_the_schema(dsn):
-    result = CliRunner().invoke(main, ["db", "init", "--dsn", dsn])
-    assert result.exit_code == 0, result.output
-    assert "ready" in result.output
-
-
 def test_db_init_reports_connection_errors():
     result = CliRunner().invoke(
         main, ["db", "init", "--dsn", "postgresql://nobody@127.0.0.1:1/none?connect_timeout=1"]

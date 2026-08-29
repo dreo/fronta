@@ -5,6 +5,7 @@ Distributed task processing on PostgreSQL with sandboxed process execution.
 ## 1. Scope
 
 - V1: Python SDK, asyncio and sandboxed-process executors, PostgreSQL queue, worker CLI, server CLI (REST + MCP + web dashboard), db CLI.
+- Supported hosts: Linux and macOS for the SDK, server, and asyncio-only workers; Linux for workers containing process tasks.
 - Pre-deployment: breaking changes to schema and contracts are preferred over compatibility paths.
 - Non-goals: cron; workflows (no DAG engine, dependencies, or automatic triggers); non-PostgreSQL backends; non-Linux sandboxing; result streaming; multi-tenancy.
 
@@ -95,15 +96,15 @@ Distributed task processing on PostgreSQL with sandboxed process execution.
 - SDK: section 3. Configuration via pydantic-settings, prefix `FRONTA_` (`FRONTA_DSN`, timeouts, and limits from section 10), validated at startup.
 - `fronta db init`: applies `schema.sql` idempotently. No migration framework in V1.
 - `fronta worker module:attr`: `attr` is a `Worker`. Start: publish definitions, sandbox probe, orphan scavenge, LISTEN, claim loop with `concurrency` slots shared by both executors. DB connections serve short transactions only (one LISTEN connection plus a small pool); none is held during execution. Structured logs with task_id/attempt correlation.
-- `fronta server`: one FastAPI app serving REST, MCP (official `mcp` SDK, streamable HTTP), and the dashboard (Jinja templates hydrated with Alpine.js over the REST endpoints). Needs only the database.
+- `fronta server`: one FastAPI app serving REST, MCP (official `mcp` SDK, streamable HTTP), and a static dashboard hydrated with Alpine.js over the REST endpoints. Needs only the database.
   - Operations (REST and MCP tools 1:1): `list_task_types`; `enqueue` (type, input, priority, run_at, key, concurrency_key → id; validated against the published JSON schema and caps); `get_task` (row with result, error, progress); `list_tasks` (summaries without the JSON columns; filters type, state, key; keyset pagination by id, newest first); `cancel` (409 when terminal). Request bodies over the payload cap plus 64 KiB are refused with 413 before parsing.
   - Errors: 401 missing/invalid token, 404 unknown type or id, 409 not cancellable, 413 over cap, 422 invalid input.
-  - Auth: with `FRONTA_SERVER_TOKEN` set, every REST and MCP request requires `Authorization: Bearer`; the dashboard HTML is public and asks for the token once. Single tenant, loopback/trusted network only; binds 127.0.0.1 by default.
+  - Auth: `FRONTA_SERVER_TOKEN` is required; every REST and MCP request requires `Authorization: Bearer`; the dashboard HTML is public and asks for the token once. Single tenant, loopback/trusted network only; binds 127.0.0.1 by default.
   - Dashboard: task list with filters, task detail (input, result, error, progress, attempts), cancel, task types, enqueue form.
 
 ## 8. Dependencies
 
-`psycopg[binary,pool]>=3`, `psycopg-pool`, `pydantic`, `pydantic-settings`, `click`, `fastapi`, `uvicorn`, `jinja2`, `mcp`, `jsonschema`; Alpine.js vendored; bubblewrap and util-linux (`prlimit`) on worker hosts.
+`psycopg[binary,pool]>=3`, `psycopg-pool`, `pydantic`, `pydantic-settings`, `click`, `fastapi`, `uvicorn`, `mcp`, `jsonschema`; Alpine.js vendored; bubblewrap and util-linux (`prlimit`) on worker hosts.
 
 ## 9. Tests (among others)
 

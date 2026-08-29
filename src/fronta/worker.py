@@ -420,13 +420,14 @@ class Worker[StateT]:
     async def _start_checks(self) -> None:
         async with self.pool.connection() as conn:
             for definition in self.definitions.values():
-                previous = await store.publish_task_type(conn, definition.spec)
-                if previous is not None and previous != definition.spec.fingerprint:
+                spec = definition.spec
+                previous = await store.publish_task_type(conn, spec)
+                if previous is not None and previous != spec.fingerprint:
                     log.warning(
                         "definition of %r changed (fingerprint %s -> %s): last writer wins",
                         definition.name,
                         previous[:12],
-                        definition.spec.fingerprint[:12],
+                        spec.fingerprint[:12],
                     )
         probed: set[tuple[Any, ...]] = set()
         for definition in self.definitions.values():
@@ -453,6 +454,9 @@ class Worker[StateT]:
             log.warning("scavenged %d orphaned sandbox processes", killed)
 
     async def _serve(self) -> None:
+        # A Worker may be constructed long before it starts. The watchdog measures event-loop
+        # progress while serving, so its baseline must begin here rather than in __init__.
+        self._last_tick = time.monotonic()
         watchdog = threading.Thread(target=self._watchdog, name="fronta-watchdog", daemon=True)
         watchdog.start()
         loops = [

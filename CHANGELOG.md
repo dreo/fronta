@@ -5,6 +5,25 @@ All notable changes to Fronta are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Pre-1.0, minor versions may change the schema and the
 contracts (there is no migration tooling yet: run `fronta db init` on a fresh schema).
 
+## Unreleased
+
+### Added
+
+- macOS support for the SDK, asyncio-only workers, server, and development test suite. Sandboxed
+  process tasks remain Linux-only.
+
+### Changed
+
+- The dashboard is now a static packaged asset; the server extra no longer depends on Jinja.
+- Expensive scale and browser tests run once per CI change instead of on every compatibility leg.
+
+### Fixed
+
+- REST and MCP now handle an explicit zero page limit consistently, and MCP authentication
+  failures include the standard bearer challenge header.
+- Cancelling a sandbox while bubblewrap is starting now kills every marked descendant, including
+  processes created before bubblewrap arms its parent-death protection.
+
 ## [0.1.0] - 2026-08-29
 
 First release.

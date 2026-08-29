@@ -43,12 +43,10 @@
     <button :class="{active: tab === 'enqueue'}" @click="tab = 'enqueue'; loadTypes()">Enqueue</button>
   </nav>
   <span class="muted" x-text="status"></span>
-  <template x-if="authRequired">
-    <span style="margin-left:auto" class="row">
-      <input type="password" placeholder="API token" x-model="tokenInput" @keyup.enter="saveToken()" data-testid="token-input">
-      <button class="plain" @click="saveToken()">Use token</button>
-    </span>
-  </template>
+  <span style="margin-left:auto" class="row">
+    <input type="password" placeholder="API token" x-model="tokenInput" @keyup.enter="saveToken()" data-testid="token-input">
+    <button class="plain" @click="saveToken()">Use token</button>
+  </span>
 </header>
 <main>
   <p class="error" x-show="error" x-text="error"></p>
@@ -144,7 +142,6 @@
 <script>
 function dashboard() {
   return {
-    authRequired: {{ 'true' if auth_required else 'false' }},
     tokenInput: '', token: '', tab: 'tasks', status: '', error: '', auto: false,
     types: [], tasks: [], next: null, task: null,
     states: ['queued', 'running', 'succeeded', 'failed', 'cancelled'],
