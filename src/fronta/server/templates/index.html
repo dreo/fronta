@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fronta</title>
+<script defer src="/static/alpine.min.js"></script>
+<style>
+  :root { --fg: #1c1e21; --muted: #6b7280; --line: #e5e7eb; --bg: #ffffff; --alt: #f6f7f9; --accent: #2456d6; --bad: #b42318; --good: #067647; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 18px; margin: 0 12px 0 0; }
+  nav button { background: none; border: 0; padding: 8px 10px; cursor: pointer; font: inherit; color: var(--muted); border-bottom: 2px solid transparent; }
+  nav button.active { color: var(--fg); border-color: var(--accent); }
+  main { padding: 16px 20px; display: grid; gap: 16px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input, select, textarea, button.primary, button.plain { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  textarea { width: 100%; min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; }
+  button.plain { cursor: pointer; }
+  button.danger { color: var(--bad); border-color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--alt); }
+  .state { padding: 1px 6px; border-radius: 4px; font-size: 12px; background: var(--alt); }
+  .state.succeeded { color: var(--good); } .state.failed, .state.cancelled { color: var(--bad); } .state.running { color: var(--accent); }
+  pre { background: var(--alt); padding: 8px; border-radius: 6px; overflow: auto; max-height: 320px; margin: 4px 0 12px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .muted { color: var(--muted); }
+  .error { color: var(--bad); }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body x-data="dashboard()" x-init="init()">
+<header>
+  <h1>Fronta</h1>
+  <nav>
+    <button :class="{active: tab === 'tasks'}" @click="tab = 'tasks'; loadTasks(true)">Tasks</button>
+    <button :class="{active: tab === 'types'}" @click="tab = 'types'; loadTypes()">Task types</button>
+    <button :class="{active: tab === 'enqueue'}" @click="tab = 'enqueue'; loadTypes()">Enqueue</button>
+  </nav>
+  <span class="muted" x-text="status"></span>
+  <template x-if="authRequired">
+    <span style="margin-left:auto" class="row">
+      <input type="password" placeholder="API token" x-model="tokenInput" @keyup.enter="saveToken()" data-testid="token-input">
+      <button class="plain" @click="saveToken()">Use token</button>
+    </span>
+  </template>
+</header>
+<main>
+  <p class="error" x-show="error" x-text="error"></p>
+
+  <section x-show="tab === 'tasks'" class="grid">
+    <div>
+      <div class="row" style="margin-bottom:8px">
+        <select x-model="filters.type" @change="loadTasks(true)">
+          <option value="">all types</option>
+          <template x-for="t in types" :key="t.name"><option :value="t.name" x-text="t.name"></option></template>
+        </select>
+        <select x-model="filters.state" @change="loadTasks(true)">
+          <option value="">all states</option>
+          <template x-for="s in states" :key="s"><option :value="s" x-text="s"></option></template>
+        </select>
+        <input placeholder="key" x-model="filters.key" @keyup.enter="loadTasks(true)">
+        <button class="plain" @click="loadTasks(true)">Refresh</button>
+        <label><input type="checkbox" x-model="auto"> auto-refresh</label>
+      </div>
+      <table data-testid="tasks">
+        <thead><tr><th>id</th><th>type</th><th>state</th><th>prio</th><th>key</th><th>attempt</th><th>fail</th><th>created</th></tr></thead>
+        <tbody>
+          <template x-for="t in tasks" :key="t.id">
+            <tr @click="openTask(t.id)">
+              <td x-text="t.id"></td><td x-text="t.type"></td>
+              <td><span class="state" :class="t.state" x-text="t.state"></span></td>
+              <td x-text="t.priority"></td><td x-text="t.key || ''"></td>
+              <td x-text="t.attempt"></td><td x-text="t.failures"></td>
+              <td class="muted" x-text="when(t.created_at)"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <p x-show="tasks.length === 0" class="muted">No tasks.</p>
+      <button class="plain" x-show="next" @click="loadTasks(false)">Load more</button>
+    </div>
+    <div class="card" x-show="task" data-testid="task-detail">
+      <div class="row">
+        <strong>Task <span x-text="task && task.id"></span></strong>
+        <span class="state" :class="task && task.state" x-text="task && task.state"></span>
+        <span class="muted" x-text="task && task.type"></span>
+        <button class="plain" @click="openTask(task.id)">Refresh</button>
+        <button class="plain danger" x-show="task && (task.state === 'queued' || task.state === 'running')" @click="cancelTask(task.id)">Cancel</button>
+      </div>
+      <p class="muted">
+        attempt <span x-text="task && task.attempt"></span> of <span x-text="task && task.max_attempts"></span>,
+        failures <span x-text="task && task.failures"></span>,
+        worker <span x-text="task && (task.worker || '-')"></span>,
+        run at <span x-text="task && when(task.run_at)"></span>,
+        finished <span x-text="task && when(task.finished_at)"></span>
+      </p>
+      <div>input</div><pre x-text="json(task && task.input)"></pre>
+      <div>result</div><pre x-text="json(task && task.result)"></pre>
+      <div>error</div><pre x-text="json(task && task.error)"></pre>
+      <div>progress</div><pre x-text="json(task && task.progress)"></pre>
+    </div>
+  </section>
+
+  <section x-show="tab === 'types'">
+    <table data-testid="task-types">
+      <thead><tr><th>name</th><th>executor</th><th>policy</th><th>updated</th></tr></thead>
+      <tbody>
+        <template x-for="t in types" :key="t.name">
+          <tr>
+            <td x-text="t.name"></td><td x-text="t.executor"></td>
+            <td><code x-text="JSON.stringify(t.policy)"></code></td>
+            <td class="muted" x-text="when(t.updated_at)"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </section>
+
+  <section x-show="tab === 'enqueue'" class="card" style="max-width:720px">
+    <div class="row">
+      <select x-model="form.type" @change="prefill()" data-testid="enqueue-type">
+        <option value="">select a type</option>
+        <template x-for="t in types" :key="t.name"><option :value="t.name" x-text="t.name"></option></template>
+      </select>
+      <input type="number" placeholder="priority" x-model.number="form.priority" style="width:110px">
+      <input placeholder="key (dedupe)" x-model="form.key">
+      <input placeholder="concurrency key" x-model="form.concurrency_key">
+      <input placeholder="run at (ISO 8601 with offset)" x-model="form.run_at" style="width:260px">
+    </div>
+    <p class="muted">Input (JSON object)</p>
+    <textarea x-model="form.input" data-testid="enqueue-input"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="primary" @click="submit()">Enqueue</button>
+      <span x-text="enqueued"></span>
+    </div>
+  </section>
+</main>
+<script>
+function dashboard() {
+  return {
+    authRequired: {{ 'true' if auth_required else 'false' }},
+    tokenInput: '', token: '', tab: 'tasks', status: '', error: '', auto: false,
+    types: [], tasks: [], next: null, task: null,
+    states: ['queued', 'running', 'succeeded', 'failed', 'cancelled'],
+    filters: { type: '', state: '', key: '' },
+    form: { type: '', input: '{}', priority: 0, key: '', concurrency_key: '', run_at: '' },
+    enqueued: '',
+    init() {
+      try { this.token = localStorage.getItem('fronta_token') || ''; } catch (e) { this.token = ''; }
+      this.loadTypes(); this.loadTasks(true);
+      setInterval(() => { if (this.auto && this.tab === 'tasks') this.loadTasks(true); }, 5000);
+    },
+    saveToken() {
+      this.token = this.tokenInput; this.tokenInput = '';
+      try { localStorage.setItem('fronta_token', this.token); } catch (e) {}
+      this.error = ''; this.loadTypes(); this.loadTasks(true);
+    },
+    async api(method, path, body) {
+      const headers = { 'Accept': 'application/json' };
+      if (body !== undefined) headers['Content-Type'] = 'application/json';
+      if (this.token) headers['Authorization'] = 'Bearer ' + this.token;
+      const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await res.text();
+      let data = null; try { data = text ? JSON.parse(text) : null; } catch (e) { data = { detail: text }; }
+      if (!res.ok) {
+        const detail = data && data.detail ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : res.statusText;
+        throw new Error(res.status + ' ' + detail);
+      }
+      return data;
+    },
+    async loadTypes() {
+      try { this.types = await this.api('GET', '/api/v1/task-types'); this.error = ''; }
+      catch (e) { this.error = e.message; }
+    },
+    async loadTasks(reset) {
+      const q = new URLSearchParams();
+      if (this.filters.type) q.set('type', this.filters.type);
+      if (this.filters.state) q.set('state', this.filters.state);
+      if (this.filters.key) q.set('key', this.filters.key);
+      if (!reset && this.next) q.set('before', this.next);
+      try {
+        const page = await this.api('GET', '/api/v1/tasks?' + q.toString());
+        this.tasks = reset ? page.items : this.tasks.concat(page.items);
+        this.next = page.next; this.error = '';
+        this.status = this.tasks.length + ' task(s) shown';
+      } catch (e) { this.error = e.message; }
+    },
+    async openTask(id) {
+      try { this.task = await this.api('GET', '/api/v1/tasks/' + id); this.error = ''; }
+      catch (e) { this.error = e.message; }
+    },
+    async cancelTask(id) {
+      try { await this.api('POST', '/api/v1/tasks/' + id + '/cancel'); } catch (e) { this.error = e.message; return; }
+      // A running task is cancelled by its worker within the grace period: follow it until it settles.
+      for (let i = 0; i < 40; i++) {
+        await this.openTask(id);
+        if (!this.task || this.task.id !== id || !['queued', 'running'].includes(this.task.state)) break;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      await this.loadTasks(true);
+    },
+    prefill() {
+      const t = this.types.find(x => x.name === this.form.type);
+      if (!t) return;
+      const props = (t.input_schema && t.input_schema.properties) || {};
+      const sample = {};
+      for (const [name, prop] of Object.entries(props)) {
+        const type = prop.type || (prop.anyOf && prop.anyOf[0] && prop.anyOf[0].type) || 'string';
+        sample[name] = prop.default !== undefined ? prop.default : ({ integer: 0, number: 0, boolean: false, array: [], object: {} }[type] ?? '');
+      }
+      this.form.input = JSON.stringify(sample, null, 2);
+    },
+    async submit() {
+      this.enqueued = '';
+      let input;
+      try { input = JSON.parse(this.form.input); } catch (e) { this.error = 'input is not valid JSON'; return; }
+      const body = { type: this.form.type, input, priority: this.form.priority || 0 };
+      if (this.form.key) body.key = this.form.key;
+      if (this.form.concurrency_key) body.concurrency_key = this.form.concurrency_key;
+      if (this.form.run_at) body.run_at = this.form.run_at;
+      try { const r = await this.api('POST', '/api/v1/tasks', body); this.enqueued = 'enqueued task ' + r.id; this.error = ''; }
+      catch (e) { this.error = e.message; }
+    },
+    json(v) { return v === null || v === undefined ? '' : JSON.stringify(v, null, 2); },
+    when(v) { return v ? new Date(v).toLocaleString() : '-'; },
+  };
+}
+</script>
+</body>
+</html>

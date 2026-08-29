@@ -7,9 +7,49 @@ authors = [
     { name = "Ondrej", email = "ondrej@ilcik.com" }
 ]
 license = "MIT"
-requires-python = ">=3.13"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.12"
+keywords = ["task queue", "postgresql", "asyncio", "sandbox", "bubblewrap", "mcp", "workers"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Framework :: FastAPI",
+    "Framework :: Pydantic :: 2",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
+]
 dependencies = [
-    "click>=8.5.0",
+    # Every floor is tested: CI runs the suite at `--resolution lowest-direct` with all extras and
+    # these are the versions it installs. Ceilings exclude the next major of contracts we depend
+    # on. `psycopg[binary]` gives an out-of-the-box install; an application that ships
+    # `psycopg[c]` keeps it (psycopg prefers the C implementation).
+    "click>=8.1,<9",
+    "psycopg-pool>=3.2,<4",
+    "psycopg[binary,pool]>=3.2.2,<4",    # notifies(timeout=) is 3.2; 3.2.2 has Python 3.13 wheels
+    "pydantic>=2.12,<3",                 # mcp 2.1 needs 2.12; the lowest version CI tests
+    "pydantic-settings>=2.5,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/dreo/fronta"
+Repository = "https://github.com/dreo/fronta"
+Issues = "https://github.com/dreo/fronta/issues"
+Changelog = "https://github.com/dreo/fronta/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+# `fronta server` (REST + MCP + dashboard); workers and the SDK do not need it.
+server = [
+    "fastapi>=0.110,<1",                 # lifespan= and Annotated dependencies
+    "jinja2>=3.1,<4",
+    "jsonschema[format-nongpl]>=4.20,<5",  # Draft 2020-12 + FORMAT_CHECKER
+    "mcp>=2.1,<3",                       # MCPServer + streamable_http_app(host=, max_request_body_size=)
+    "uvicorn>=0.31.1,<1",                  # timeout_graceful_shutdown=
 ]
 
 [project.scripts]
@@ -22,16 +62,20 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "deptry>=0.25.1",
+    "httpx>=0.28.1",
     "import-linter>=2.14",
     "mypy>=2.3.1",
     "pip-audit>=2.10.1",
+    "playwright>=1.62.0",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.16.5",
+    "types-jsonschema>=4.26.0.20260518",
 ]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
@@ -55,5 +99,25 @@ mypy_path = "src"
 [tool.importlinter]
 root_package = "fronta"
 
+[[tool.importlinter.contracts]]
+name = "Layers: cli > server | worker > executors > sandbox | definitions > runtime > store > codec > model | config | errors"
+type = "layers"
+layers = [
+    "fronta.cli",
+    "fronta.server | fronta.worker",
+    "fronta.executors",
+    "fronta.sandbox | fronta.definitions",
+    "fronta.runtime",
+    "fronta.store",
+    "fronta.codec",
+    "fronta.model | fronta.config | fronta.errors",
+]
+
 [tool.deptry]
 # Add per-rule ignores only with a justifying comment.
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+testpaths = ["tests"]

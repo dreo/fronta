@@ -1,0 +1,81 @@
+name: ci
+
+# Every pull request and every push to `main` runs the full gate (`make checkall`: lint, types,
+# architecture, the test suite against PostgreSQL 16 with real sandboxes, pip-audit) on each
+# supported Python, plus the declared lower bounds, and installs the built wheel.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+        resolution: [highest]
+        include:
+          # `lowest-direct` installs the declared lower bounds of every direct dependency, so the
+          # bounds in pyproject.toml are proven, not guessed.
+          - python: "3.12"
+            resolution: lowest-direct
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fronta
+          POSTGRES_PASSWORD: fronta
+          POSTGRES_DB: fronta
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fronta"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FRONTA_TEST_DSN: postgresql://fronta:fronta@127.0.0.1:5432/fronta
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          version: "0.11.18"
+          python-version: ${{ matrix.python }}
+      # The sandbox tests run real bubblewrap sandboxes; the runner allows unprivileged user
+      # namespaces once the AppArmor restriction is lifted for this session.
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      # The committed lock must match pyproject.toml; `highest` installs exactly the lock.
+      - run: uv lock --check
+      - if: matrix.resolution == 'highest'
+        run: uv sync --all-extras --locked
+      # uv re-resolves when the lock was made with another resolution mode (probed: the
+      # floors are what gets installed); the listing makes that visible in the log.
+      - if: matrix.resolution != 'highest'
+        run: uv sync --all-extras --resolution ${{ matrix.resolution }} && uv pip list
+      - run: uv run playwright install --with-deps chromium
+      # The exact command required before handoff — no separate CI logic, no drift.
+      - run: make checkall
+      # The artifacts a user installs: the wheel base (SDK + worker) and with the server extra,
+      # and the sdist.
+      - run: uv build --no-sources
+      - run: uvx twine check dist/*
+      - run: |
+          uv venv --python ${{ matrix.python }} /tmp/base && uv pip install --python /tmp/base/bin/python dist/*.whl
+          /tmp/base/bin/fronta --version && /tmp/base/bin/python -c "import fronta, sys; assert not any(m.startswith(('fastapi', 'mcp', 'uvicorn')) for m in sys.modules)"
+          uv venv --python ${{ matrix.python }} /tmp/server && uv pip install --python /tmp/server/bin/python "$(ls dist/*.whl)[server]"
+          /tmp/server/bin/fronta server --help
+          uv venv --python ${{ matrix.python }} /tmp/sdist && uv pip install --python /tmp/sdist/bin/python dist/*.tar.gz
+          /tmp/sdist/bin/fronta --version
