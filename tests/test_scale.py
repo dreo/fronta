@@ -238,7 +238,10 @@ async def test_two_thousand_quick_tasks_through_a_fleet_exactly_once_without_lea
         )
     ]
     assert live == []
-    await wait_until(lambda: _threads_at_most(baseline_threads), timeout=5)
+    deadline = time.monotonic() + 5
+    while threading.active_count() > baseline_threads and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert threading.active_count() <= baseline_threads, [t.name for t in threading.enumerate()]
     try:
         await wait_until(lambda: _own_connections_only(conn), timeout=30)
     except AssertionError:
@@ -372,10 +375,6 @@ async def test_purging_a_hundred_thousand_old_rows_in_batches(conn):
 
 async def _count_is(conn, state, expected):
     return await count(conn, state) == expected
-
-
-async def _threads_at_most(n):
-    return threading.active_count() <= n
 
 
 async def _own_connections_only(conn):

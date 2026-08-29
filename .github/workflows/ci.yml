@@ -45,11 +45,15 @@ jobs:
           --health-retries 10
     env:
       FRONTA_TEST_DSN: postgresql://fronta:fronta@127.0.0.1:5432/fronta
+      # The gate's hooks run `uv run --locked`, which rejects a lock made in another resolution
+      # mode; the lowest-direct leg re-resolves the lock, so every uv command in the job must
+      # use the same mode.
+      UV_RESOLUTION: ${{ matrix.resolution }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
           version: "0.11.18"
           python-version: ${{ matrix.python }}

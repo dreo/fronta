@@ -133,6 +133,7 @@ class Attempt:
         self.token = row.token
         self.cause: Cause | None = None
         self._stop_event = asyncio.Event()
+        self._settled = False  # the final transition is done: heartbeats must end
         self.ctx = TaskContext(self, worker.state)
         self.execution = self._make_execution()
         self.fatal = False
@@ -210,6 +211,7 @@ class Attempt:
             if not isinstance(self.execution, AsyncioExecution):
                 await self._end_process_runner(runner)
             stop.cancel()
+            self._settled = True
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
@@ -294,9 +296,17 @@ class Attempt:
         await fenced_write(self.worker.pool, self.ctx.log, what, op)
 
     async def _heartbeats(self) -> None:
+        """Renew the lease until the attempt is settled or the lease is lost.
+
+        The controller cancels this task; `_settled` is the backstop for a cancellation that a
+        database library swallows inside `connection()` (psycopg-pool < 3.2.8 did), so a finished
+        attempt can never keep heartbeating until the pool closes.
+        """
         settings = self.worker.settings
-        while True:
+        while not self._settled:
             await asyncio.sleep(settings.heartbeat_s)
+            if self._settled:
+                return
             try:
                 async with self.worker.pool.connection() as conn:
                     beat = await store.heartbeat(conn, self.row.id, self.token, settings.lease_s)
@@ -306,7 +316,8 @@ class Attempt:
             if beat is store.Heartbeat.LOST:
                 self.ctx.log.warning("heartbeat rejected: lease lost")
                 self.stop(Cause.LOST)
-            elif beat is store.Heartbeat.CANCEL_REQUESTED:
+                return  # the lease is gone; further beats would only be rejected
+            if beat is store.Heartbeat.CANCEL_REQUESTED:
                 self.stop(Cause.CANCEL)
 
 

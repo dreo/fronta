@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 import time
 
 import pytest
 
-from fronta import Settings, State, Worker, store
+from fronta import Settings, State, Worker, store, task
 from tests.conftest import FAST, spawn_worker, wait_until, worker_env
 from tests.workers import In, sleep_task
 
@@ -168,3 +169,61 @@ async def _state(conn, task_id, state):
 
 async def _gone(worker, task_id):
     return task_id not in worker.attempts
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_heartbeats_end_when_the_attempt_settles_even_if_a_cancellation_is_lost(
+    conn, dsn, run_worker, monkeypatch
+):
+    """psycopg-pool < 3.2.8 could swallow the controller's cancellation inside `connection()`;
+    the heartbeat loop must still end by itself, or a finished attempt keeps beating (and the
+    worker cannot stop) until the pool closes."""
+    real_heartbeat = store.heartbeat
+
+    async def heartbeat_that_loses_cancellation(conn, task_id, token, lease_s):
+        with contextlib.suppress(asyncio.CancelledError):  # the controller's cancel lands
+            await asyncio.sleep(30)  # here and is lost, as in the buggy library
+        return await real_heartbeat(conn, task_id, token, lease_s)
+
+    monkeypatch.setattr(store, "heartbeat", heartbeat_that_loses_cancellation)
+    quick = Settings(dsn=dsn, **{**FAST, "heartbeat_s": 0.05, "lease_s": 60.0})
+    started = time.monotonic()
+    async with run_worker(Worker([sleep_task], settings=quick)):
+        task_id = await sleep_task.enqueue(In(sleep_s=0.2))
+        await wait_until(lambda: _state(conn, task_id, State.SUCCEEDED), timeout=10)
+    assert time.monotonic() - started < 10, "the worker could not stop: heartbeats kept running"
+
+
+@task("slow_to_stop", input=In, attempt_timeout=30)
+async def slow_to_stop_task(_ctx, inp):
+    """Winds down for half a second after cancellation, well within the grace period."""
+    try:
+        await asyncio.sleep(inp.sleep_s)
+    except asyncio.CancelledError:
+        await asyncio.sleep(0.5)
+        raise
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_a_lost_lease_stops_the_heartbeats(conn, dsn, run_worker, monkeypatch):
+    """After the store reports the lease lost, the attempt is stopped and never beaten again,
+    however long its handler takes to wind down."""
+    calls = 0
+
+    async def heartbeat_lost(*_args):
+        nonlocal calls
+        calls += 1
+        return store.Heartbeat.LOST
+
+    monkeypatch.setattr(store, "heartbeat", heartbeat_lost)
+    quick = Settings(dsn=dsn, **{**FAST, "heartbeat_s": 0.05, "lease_s": 60.0})
+    async with run_worker(Worker([slow_to_stop_task], settings=quick)):
+        task_id = await slow_to_stop_task.enqueue(In(sleep_s=30))
+        await wait_until(lambda: _state(conn, task_id, State.RUNNING), timeout=10)
+        await wait_until(lambda: _beats_at_least(lambda: calls, 1), timeout=10)
+        await asyncio.sleep(1.0)  # the handler winds down; twenty intervals pass
+    assert calls == 1
+
+
+async def _beats_at_least(count, n):
+    return count() >= n

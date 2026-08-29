@@ -29,9 +29,9 @@ dependencies = [
     # these are the versions it installs. Ceilings exclude the next major of contracts we depend
     # on. `psycopg[binary]` gives an out-of-the-box install; an application that ships
     # `psycopg[c]` keeps it (psycopg prefers the C implementation).
-    "click>=8.1,<9",
-    "psycopg-pool>=3.2,<4",
-    "psycopg[binary,pool]>=3.2.2,<4",    # notifies(timeout=) is 3.2; 3.2.2 has Python 3.13 wheels
+    "click>=8.1.1,<9",                   # 8.1.0's decorators are untyped for mypy
+    "psycopg-pool>=3.2.8,<4",             # 3.2.8: CancelledError inside connection() no longer swallowed
+    "psycopg[binary,pool]>=3.2.11,<4",  # 3.2.4 keeps notifies across notifies() restarts; 3.2.10/11 cancel + wait fixes
     "pydantic>=2.12,<3",                 # mcp 2.1 needs 2.12; the lowest version CI tests
     "pydantic-settings>=2.5,<3",
 ]
