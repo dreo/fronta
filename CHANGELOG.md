@@ -7,6 +7,8 @@ contracts (there is no migration tooling yet: run `fronta db init` on a fresh sc
 
 ## Unreleased
 
+## [0.2.0] - 2026-08-29
+
 ### Added
 
 - macOS support for the SDK, asyncio-only workers, server, and development test suite. Sandboxed
