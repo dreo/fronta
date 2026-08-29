@@ -71,7 +71,12 @@ jobs:
         run: uv sync --all-extras --resolution ${{ matrix.resolution }} && uv pip list
       - run: uv run playwright install --with-deps chromium
       # The exact command required before handoff — no separate CI logic, no drift.
-      - run: make checkall
+      - if: matrix.resolution == 'highest'
+        run: make checkall
+      # The floors are compatibility statements, not what we ship: old versions carry known
+      # advisories, so this leg runs the gate and the suite without the audit (see Makefile).
+      - if: matrix.resolution != 'highest'
+        run: make check test
       # The artifacts a user installs: the wheel base (SDK + worker) and with the server extra,
       # and the sdist.
       - run: uv build --no-sources
