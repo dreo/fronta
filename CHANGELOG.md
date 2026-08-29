@@ -7,6 +7,16 @@ contracts (there is no migration tooling yet: run `fronta db init` on a fresh sc
 
 ## Unreleased
 
+### Added
+
+- Public live lifecycle subscriptions (`subscribe_events()` and `TaskEvent`) plus SDK task lookup
+  (`get_task()`) for singleton external workflow consumers.
+
+### Fixed
+
+- Enqueueing through an autocommit caller connection now commits the task row and its wake/event
+  notifications atomically.
+
 ## [0.2.0] - 2026-08-29
 
 ### Added

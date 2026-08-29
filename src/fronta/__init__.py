@@ -18,7 +18,17 @@ from fronta.errors import (
     TaskNotFound,
     UnknownTaskType,
 )
-from fronta.model import Backoff, Policy, Sandbox, State, TaskRow, TaskSummary, TaskTypeRow
+from fronta.events import get_task, subscribe_events
+from fronta.model import (
+    Backoff,
+    Policy,
+    Sandbox,
+    State,
+    TaskEvent,
+    TaskRow,
+    TaskSummary,
+    TaskTypeRow,
+)
 from fronta.runtime import close_pool, configure, open_pool
 from fronta.worker import Worker
 
@@ -43,6 +53,7 @@ __all__ = [
     "Settings",
     "State",
     "TaskDefinition",
+    "TaskEvent",
     "TaskNotFound",
     "TaskRow",
     "TaskSummary",
@@ -52,7 +63,9 @@ __all__ = [
     "__version__",
     "close_pool",
     "configure",
+    "get_task",
     "open_pool",
     "process_task",
+    "subscribe_events",
     "task",
 ]

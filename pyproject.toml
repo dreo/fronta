@@ -106,7 +106,7 @@ layers = [
     "fronta.cli",
     "fronta.server | fronta.worker",
     "fronta.executors",
-    "fronta.sandbox | fronta.definitions",
+    "fronta.sandbox | fronta.definitions | fronta.events",
     "fronta.runtime",
     "fronta.store",
     "fronta.codec",
