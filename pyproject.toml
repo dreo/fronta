@@ -1,6 +1,6 @@
 [project]
 name = "fronta"
-version = "0.2.0"
+version = "0.3.0"
 description = "Distributed task queue for asyncio tasks and sandboxed processes"
 readme = "README.md"
 authors = [
