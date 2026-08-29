@@ -419,13 +419,13 @@ class SandboxProcess:
                 init_pidfd = Pidfd.open(init_pid)
         except BaseException:
             # Cancelled or failed while the sandbox was starting: nothing may outlive this call.
-            await _abort(proc, outer_pidfd, kill_timeout_s)
+            await _abort(proc, outer_pidfd, kill_timeout_s, sandbox_id)
             if outer_pidfd is not None:
                 outer_pidfd.close()
             raise
         if not line:
             # bwrap gave up before creating the sandbox (bad option, missing bind, no userns).
-            stderr = await _abort(proc, outer_pidfd, kill_timeout_s)
+            stderr = await _abort(proc, outer_pidfd, kill_timeout_s, sandbox_id)
             if outer_pidfd is not None:
                 outer_pidfd.close()
             msg = f"sandbox setup failed (bwrap exit {proc.returncode}): {stderr[:2000]}"
@@ -532,7 +532,10 @@ class SandboxProcess:
 
 
 async def _abort(
-    proc: asyncio.subprocess.Process, outer_pidfd: Pidfd | None, timeout_s: float
+    proc: asyncio.subprocess.Process,
+    outer_pidfd: Pidfd | None,
+    timeout_s: float,
+    sandbox_id: str,
 ) -> str:
     """SIGKILL a starting sandbox (outer bwrap; the init dies with it) and reap it; stderr text.
 
@@ -544,6 +547,10 @@ async def _abort(
     if proc.returncode is None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
+    # A configured bwrap wrapper or bwrap's init can outlive the outer process. This is especially
+    # important before --die-with-parent is armed: kill every descendant under its UUID-scoped
+    # marker, using the same pidfd/recheck protocol as established sandboxes.
+    signal_marked(SANDBOX_ENV, sandbox_id, signal.SIGKILL)
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(proc.wait(), timeout_s)
     if proc.stderr is None:

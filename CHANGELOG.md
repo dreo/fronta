@@ -21,6 +21,8 @@ contracts (there is no migration tooling yet: run `fronta db init` on a fresh sc
 
 - REST and MCP now handle an explicit zero page limit consistently, and MCP authentication
   failures include the standard bearer challenge header.
+- Cancelling a sandbox while bubblewrap is starting now kills every marked descendant, including
+  processes created before bubblewrap arms its parent-death protection.
 
 ## [0.1.0] - 2026-08-29
 

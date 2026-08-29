@@ -419,7 +419,7 @@ async def _marked(task_id):
 
 async def test_cancelling_a_spawn_kills_what_it_started(tmp_path):
     wrapper = tmp_path / "slow-bwrap"
-    wrapper.write_text('#!/bin/sh\nsleep 6\nexec bwrap "$@"\n')
+    wrapper.write_text('#!/bin/sh\nsleep 600\nexec bwrap "$@"\n')
     wrapper.chmod(0o755)
     env = sandbox.command_env(
         Sandbox(), worker=sandbox.worker_id(), sandbox_id="spawn-" + os.urandom(4).hex()
@@ -429,7 +429,11 @@ async def test_cancelling_a_spawn_kills_what_it_started(tmp_path):
             bwrap_path=str(wrapper), sandbox=Sandbox(), argv=(SH, "-c", "sleep 600"), env=env
         )
     )
-    await wait_until(lambda: _has_marked(sandbox.SANDBOX_ENV, env[sandbox.SANDBOX_ENV]), timeout=5)
+
+    async def wrapper_and_child_started():
+        return len(sandbox.find_marked(sandbox.SANDBOX_ENV, env[sandbox.SANDBOX_ENV])) >= 2
+
+    await wait_until(wrapper_and_child_started, timeout=5)
     spawning.cancel()
     with pytest.raises(asyncio.CancelledError):
         await spawning
@@ -587,9 +591,9 @@ async def test_a_failing_startup_probe_cleans_up_with_the_configured_timeout(
     original_abort = sandbox._abort
     seen: list[float] = []
 
-    async def recording_abort(proc, outer_pidfd, timeout_s):
+    async def recording_abort(proc, outer_pidfd, timeout_s, sandbox_id):
         seen.append(timeout_s)
-        return await original_abort(proc, outer_pidfd, timeout_s)
+        return await original_abort(proc, outer_pidfd, timeout_s, sandbox_id)
 
     monkeypatch.setattr(sandbox, "_abort", recording_abort)
     broken = tmp_path / "broken-bwrap"
