@@ -370,16 +370,6 @@ async def test_dashboard_serves_the_shell_and_alpine(server):
         assert len(alpine.content) > 10000
 
 
-async def test_dashboard_without_a_token_does_not_prompt(dsn):
-    port = free_port()
-    app = create_app(Settings(dsn=dsn, **{**FAST, "server_port": port}))
-    async for base in serve(app, port):
-        async with httpx.AsyncClient(base_url=base) as anon:
-            page = await anon.get("/")
-            assert "authRequired: false" in page.text
-            assert (await anon.get("/api/v1/task-types")).status_code == 200
-
-
 async def test_enqueue_enforces_json_schema_formats(api, conn):
     await store.publish_task_type(conn, timed_task.spec)
     bad = await api.post("/tasks", json={"type": "timed", "input": {"at": "not-a-date"}})
@@ -402,3 +392,14 @@ async def test_body_limit_boundary_is_exact(api):
     assert len(over) == limit + 1
     rejected = await api.post("/tasks", content=over, headers=json_type)
     assert rejected.status_code == 413
+
+
+def test_the_server_never_runs_without_a_token(dsn):
+    from fronta import ConfigurationError  # noqa: PLC0415
+    from fronta.server import create_app  # noqa: PLC0415
+    from fronta.server.api import bearer_ok  # noqa: PLC0415
+
+    with pytest.raises(ConfigurationError, match="FRONTA_SERVER_TOKEN"):
+        create_app(Settings(dsn=dsn, **FAST))
+    assert not bearer_ok(None, None)
+    assert not bearer_ok("Bearer anything", None)

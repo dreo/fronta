@@ -40,7 +40,7 @@ Distributed task processing on PostgreSQL with sandboxed process execution.
 - `await task.enqueue(input, *, conn=None, priority=0, run_at=None, key=None, concurrency_key=None) -> int` (task id, bigint identity, monotonic).
 - With `conn`, the insert joins the caller's transaction; Fronta never commits, rolls back, or closes it. Without `conn`, Fronta's pool, autocommit.
 - Dedupe: `key` is unique per task type among queued/running tasks (partial unique index). A duplicate returns the existing id and never mutates the existing task. If the existing row disappears between conflict and lookup, the insert is retried.
-- `ctx.enqueue()` is immediate and independent of the task's outcome; a retried task enqueues again, so use `key` for idempotent fan-out.
+- `ctx.enqueue()` is immediate and independent of the task's outcome; a retried task enqueues again. `key` dedupes only against queued/running tasks, so a retry after the child finished enqueues it again: make children idempotent or give them a business-level key of their own.
 
 ### ctx
 

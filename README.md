@@ -74,7 +74,8 @@ asyncio.run(main())
 ```
 
 `enqueue(..., conn=conn)` joins your own psycopg transaction instead of using the pool. `key`
-dedupes: while a task with the same key is queued or running, `enqueue` returns its id.
+dedupes: while a task with the same key is queued or running, `enqueue` returns its id; once
+that task has finished, the same key enqueues a new one.
 
 A handler gets the validated input and a `Context` (`task_id`, `attempt`, `log`, `progress()`,
 `enqueue()`, `cancelled`, `state` from the worker lifespan). It must handle
@@ -107,10 +108,10 @@ FRONTA_SERVER_TOKEN=... fronta server      # 127.0.0.1:8000
 ```
 
 REST under `/api/v1` (task types, enqueue, get, list, cancel), MCP at `/mcp`, dashboard at `/`.
-The SDK only enqueues; inspection and cancellation go through the server. With
-`FRONTA_SERVER_TOKEN` set, every REST and MCP request needs `Authorization: Bearer <token>`;
-without it the server is open, which is only acceptable on a private network. Put a
-TLS-terminating reverse proxy in front of it anywhere else. Endpoints, inputs and error codes:
+The SDK only enqueues; inspection and cancellation go through the server. `FRONTA_SERVER_TOKEN`
+is required (the server never runs open: even on loopback a browser could be made to cancel or
+enqueue tasks); every REST and MCP request sends it as `Authorization: Bearer <token>`. Put a
+TLS-terminating reverse proxy in front of it outside a private network. Endpoints, inputs and error codes:
 [docs/reference.md](https://github.com/dreo/fronta/blob/main/docs/reference.md#server).
 
 ## Deploy

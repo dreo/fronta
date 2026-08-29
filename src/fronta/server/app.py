@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from fronta.errors import (
+    ConfigurationError,
     InvalidInput,
     NotCancellable,
     PayloadTooLarge,
@@ -122,6 +123,11 @@ async def _reply(send: Send, status: int, detail: str) -> None:
 
 
 def create_app(settings: Settings) -> FastAPI:
+    if settings.server_token is None:
+        # Never open, not even on loopback: a page in a browser on the same host could enqueue
+        # or cancel tasks with a cross-origin request; a bearer header cannot be forged that way.
+        msg = "FRONTA_SERVER_TOKEN is required: the server does not run without authentication"
+        raise ConfigurationError(msg)
     service = Service(settings)
     mcp = make_mcp(service)
 
@@ -146,9 +152,7 @@ def create_app(settings: Settings) -> FastAPI:
     templates = jinja2.Environment(
         loader=jinja2.PackageLoader("fronta.server", "templates"), autoescape=True
     )
-    page = templates.get_template("index.html").render(
-        auth_required=settings.server_token is not None
-    )
+    page = templates.get_template("index.html").render(auth_required=True)
     app.mount("/static", StaticFiles(directory=str(package / "static")), name="static")
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)

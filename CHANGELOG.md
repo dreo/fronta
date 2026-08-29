@@ -16,6 +16,7 @@ First release.
   (`fronta.process_task`) with per-definition limits.
 - Concurrency limits per task type and per concurrency key, enforced exactly at claim time.
 - `fronta db init`, `fronta worker module:attr`, and — with `fronta[server]` — `fronta server`:
-  REST + MCP (streamable HTTP) + dashboard, bearer-token auth, body limits, JSON-Schema validation.
+  REST + MCP (streamable HTTP) + dashboard, mandatory bearer-token auth, body limits,
+  JSON-Schema validation.
 - Typed configuration from `FRONTA_*` environment variables.
 - Python 3.12–3.14, Linux; `fronta[server]` extra keeps the SDK/worker install light.

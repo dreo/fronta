@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from fronta import store
 from fronta.config import Settings
+from fronta.errors import ConfigurationError
 from fronta.worker import Worker
 
 log = logging.getLogger(__name__)
@@ -97,7 +98,10 @@ def worker(target: str) -> None:
     except ValidationError as exc:
         raise click.ClickException(f"invalid settings: {exc}") from exc
     log.info("worker target %s, concurrency %d", target, settings.concurrency)
-    sys.exit(asyncio.run(instance.run()))
+    try:
+        sys.exit(asyncio.run(instance.run()))
+    except psycopg.OperationalError as exc:  # could not reach the database at start
+        raise click.ClickException(f"database unavailable: {exc}") from exc
 
 
 @main.command()
@@ -124,4 +128,7 @@ def server(host: str | None, port: int | None) -> None:
             settings = Settings(**{**settings.model_dump(), **overrides})  # re-validated
     except ValidationError as exc:
         raise click.ClickException(f"invalid settings: {exc}") from exc
-    serve(settings)
+    try:
+        serve(settings)
+    except ConfigurationError as exc:
+        raise click.ClickException(str(exc)) from exc

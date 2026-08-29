@@ -13,8 +13,8 @@ any public disclosure.
   the application's database: treat them like any other application data (encryption at rest,
   backups, access control). Execution tokens never leave the worker and the database.
 - **Server.** `fronta server` binds `127.0.0.1` by default and is meant for a trusted network or
-  a reverse proxy that terminates TLS. Set `FRONTA_SERVER_TOKEN` (never empty) and send it as
-  `Authorization: Bearer`; the dashboard is public HTML that asks for the token and keeps it in
+  a reverse proxy that terminates TLS. `FRONTA_SERVER_TOKEN` is required (the server refuses to start without it, so a browser on
+  the same host cannot be made to enqueue or cancel tasks) and is sent as `Authorization: Bearer`; the dashboard is public HTML that asks for the token and keeps it in
   the browser's local storage. Request bodies are capped before parsing.
 - **Sandbox.** Process tasks run in bubblewrap with new user, PID, mount, network and IPC
   namespaces, read-only allowlisted binds, private bounded tmpfs, no network, a cleared

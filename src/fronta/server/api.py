@@ -18,10 +18,8 @@ def get_service(request: Request) -> Service:
 
 
 def bearer_ok(authorization: str | None, token: str | None) -> bool:
-    """True when no token is configured or the header carries exactly that token."""
-    if token is None:
-        return True
-    if authorization is None:
+    """True when the header carries exactly the configured token; nothing passes without one."""
+    if token is None or authorization is None:
         return False
     scheme, _, value = authorization.partition(" ")
     return scheme.lower() == "bearer" and value.strip() == token

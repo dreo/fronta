@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 from datetime import timedelta
 from typing import Any
 
@@ -13,7 +15,7 @@ from pydantic import BaseModel, ValidationError
 from fronta import Backoff, Policy, Sandbox, Settings, Worker, process_task, runtime, store, task
 from fronta.cli import main
 from fronta.model import Executor, TaskTypeSpec
-from tests.conftest import running
+from tests.conftest import fronta_cli, running
 from tests.workers import In, Out, limited_task, sleep_task
 
 
@@ -189,3 +191,22 @@ def test_server_cli_validates_its_overrides():
     )
     assert result.exit_code != 0
     assert "invalid settings" in result.output
+
+
+def test_worker_cli_reports_an_unreachable_database_cleanly():
+    env = {
+        **os.environ,
+        "FRONTA_DSN": "postgresql://nobody@127.0.0.1:1/none",
+        "FRONTA_CONNECT_TIMEOUT_S": "1",
+    }
+    result = subprocess.run(  # noqa: S603  # our own CLI with fixed arguments
+        [fronta_cli(), "worker", "tests.cliworkers:worker"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "database unavailable" in result.stderr
+    assert "Traceback" not in result.stderr

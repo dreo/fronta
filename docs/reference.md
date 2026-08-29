@@ -13,7 +13,7 @@ Details behind the [README](../README.md): the HTTP/MCP interface, configuration
 | cancel | `POST /api/v1/tasks/{id}/cancel` → `{id, state}` | `cancel` |
 
 Errors: 401 missing/invalid token, 404 unknown type or id, 409 not cancellable, 413 over the cap,
-422 invalid input (validated against the published JSON schema). With `FRONTA_SERVER_TOKEN` set,
+422 invalid input (validated against the published JSON schema). `FRONTA_SERVER_TOKEN` is required;
 every REST and MCP request needs `Authorization: Bearer <token>`; the dashboard at `/` is public
 and asks for the token once. The MCP endpoint is `/mcp`. The server binds 127.0.0.1 by default and
 is meant for a trusted network.
@@ -33,7 +33,7 @@ startup. The important ones:
 | `FRONTA_RETENTION_S` | 604800 | terminal rows are purged after 7 days |
 | `FRONTA_PAYLOAD_CAP` / `FRONTA_RESULT_CAP` | 1 MiB | UTF-8 bytes of the JSON encoding |
 | `FRONTA_PROGRESS_CAP` / `FRONTA_ERROR_CAP` | 64 KiB | |
-| `FRONTA_SERVER_HOST` / `FRONTA_SERVER_PORT` / `FRONTA_SERVER_TOKEN` | 127.0.0.1 / 8000 / unset | |
+| `FRONTA_SERVER_HOST` / `FRONTA_SERVER_PORT` / `FRONTA_SERVER_TOKEN` | 127.0.0.1 / 8000 / required | the server never runs without a token |
 | `FRONTA_BWRAP_PATH` | `bwrap` | |
 | `LOG_LEVEL_OURS` / `LOG_LEVEL_LIBS` | INFO / WARNING | log levels for Fronta and for libraries |
 
@@ -51,6 +51,9 @@ the values last published by a worker and are enforced exactly.
   execution is possible after a lease loss (a stalled worker past its lease may still be running):
   a stale worker's writes are rejected by the execution token, but its side effects are yours.
 - Concurrency limits bound valid leases, not live processes.
+- The reaper requeues up to 100 expired leases per pass (every `FRONTA_REAPER_INTERVAL_S`, in
+  every worker); after a whole fleet dies, a backlog of `n` expired leases is back in the queue
+  within about `n / (100 × workers)` intervals.
 - An asyncio handler that ignores cancellation past the grace period makes the worker exit with
   status 70 after recording the attempt and releasing its other tasks: run workers under a
   supervisor that restarts them. A handler that blocks the event loop for a lease trips a watchdog
@@ -60,7 +63,8 @@ the values last published by a worker and are enforced exactly.
   with the database unreachable it keeps retrying instead of losing a completed attempt; a second
   signal skips the grace period and, if a write is still stuck, leaves that task to the reaper.
 - Sandboxed processes die with the worker (`--die-with-parent`); a sandbox orphaned in
-  bubblewrap's few-millisecond startup window is killed by the next worker on the host. CPU time
+  bubblewrap's few-millisecond startup window is killed by the next worker with process tasks
+  that starts on the host. CPU time
   and memory rlimits are per process; the PID limit and the tmpfs bounds are sandbox-wide.
 
 ## Performance
