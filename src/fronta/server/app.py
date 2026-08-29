@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping
 from importlib import resources
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-import jinja2
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -26,13 +24,11 @@ from fronta.server.mcp import make_mcp
 from fronta.server.service import Service
 
 if TYPE_CHECKING:
-    from fronta.config import Settings
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
-type Scope = MutableMapping[str, Any]
-type Message = MutableMapping[str, Any]
-type Receive = Callable[[], Awaitable[Message]]
-type Send = Callable[[Message], Awaitable[None]]
-type ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+    from fronta.config import Settings
 
 BODY_LIMIT_MARGIN = 64 * 1024
 """Bytes allowed on top of the payload cap for the JSON envelope around the input."""
@@ -105,13 +101,20 @@ class BearerGate:
             authorization = headers.get(b"authorization")
             value = None if authorization is None else authorization.decode("latin-1")
             if not bearer_ok(value, self.token):
-                await _reply(send, 401, "missing or invalid bearer token")
+                await _reply(
+                    send,
+                    401,
+                    "missing or invalid bearer token",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
                 return
         await self.app(scope, receive, send)
 
 
-async def _reply(send: Send, status: int, detail: str) -> None:
-    body = JSONResponse({"detail": detail}, status_code=status)
+async def _reply(
+    send: Send, status: int, detail: str, *, headers: Mapping[str, str] | None = None
+) -> None:
+    body = JSONResponse({"detail": detail}, status_code=status, headers=headers)
     await send(
         {
             "type": "http.response.start",
@@ -149,10 +152,7 @@ def create_app(settings: Settings) -> FastAPI:
         app.add_exception_handler(error, _handler(status))
 
     package = resources.files("fronta.server")
-    templates = jinja2.Environment(
-        loader=jinja2.PackageLoader("fronta.server", "templates"), autoescape=True
-    )
-    page = templates.get_template("index.html").render(auth_required=True)
+    page = (package / "static" / "index.html").read_text(encoding="utf-8")
     app.mount("/static", StaticFiles(directory=str(package / "static")), name="static")
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)

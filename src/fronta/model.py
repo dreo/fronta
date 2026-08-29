@@ -39,9 +39,6 @@ class State(StrEnum):
     CANCELLED = "cancelled"
 
 
-TERMINAL_STATES = frozenset({State.SUCCEEDED, State.FAILED, State.CANCELLED})
-
-
 class Executor(StrEnum):
     ASYNCIO = "asyncio"
     PROCESS = "process"
@@ -156,7 +153,7 @@ class TaskRow:
 
 @dataclass(frozen=True, slots=True)
 class TaskSummary:
-    """List row: everything except the potentially large JSON columns."""
+    """List row omitting JSON values, backoff/timeout policy, token and lease."""
 
     id: int
     type: str

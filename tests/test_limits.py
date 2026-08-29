@@ -7,23 +7,8 @@ from typing import Any
 from fronta import Settings, State, Worker, store, task
 from fronta.model import NewTask, Policy
 from tests import workers
-from tests.conftest import FAST, running_all, wait_until
+from tests.conftest import FAST, max_overlap, running_all, wait_until
 from tests.workers import In, Out, limited_task, sleep_task
-
-
-def max_overlap(intervals, key=None):
-    """Largest number of intervals (optionally of one key) running at the same instant."""
-    points = []
-    for i in intervals:
-        if key is None or i.key == key:
-            points.append((i.start, 1))
-            points.append((i.end, -1))
-    points.sort(key=lambda p: (p[0], p[1]))
-    current = peak = 0
-    for _, delta in points:
-        current += delta
-        peak = max(peak, current)
-    return peak
 
 
 async def all_done(conn, ids):

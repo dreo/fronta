@@ -1,9 +1,9 @@
 name: ci
 
-# Every pull request and every push to `main` runs the full gate (`make checkall`: lint, types,
-# architecture, the test suite against PostgreSQL 16, pip-audit) on Linux with real sandboxes and
-# on macOS for the portable surface. Linux covers each supported Python plus the declared lower
-# bounds; both platforms install the built wheel.
+# Every pull request and push to `main` runs the exact full gate once on Linux 3.13. Compatibility
+# legs run the functional suite without the expensive scale/browser tiers: Linux covers every
+# supported Python, the declared lower bounds and real sandboxes; macOS covers the portable
+# surface. Every leg installs the built wheel.
 on:
   push:
     branches: [main]
@@ -78,14 +78,23 @@ jobs:
       # floors are what gets installed); the listing makes that visible in the log.
       - if: matrix.resolution != 'highest'
         run: uv sync --all-extras --resolution ${{ matrix.resolution }} && uv pip list
-      - run: uv run playwright install --with-deps chromium
-      # The exact command required before handoff — no separate CI logic, no drift.
-      - if: matrix.resolution == 'highest'
+      - if: matrix.python == '3.13' && matrix.resolution == 'highest'
+        run: uv run playwright install --with-deps chromium
+      # The exact command required before handoff, including scale and browser tests, runs once.
+      - if: matrix.python == '3.13' && matrix.resolution == 'highest'
         run: make checkall 2>&1 | tee gate.log
-      # The floors are compatibility statements, not what we ship: old versions carry known
-      # advisories, so this leg runs the gate and the suite without the audit (see Makefile).
+      # Other Python versions exercise behavior without repeating the 60k–100k-row stress suite
+      # or the browser workflow; those test PostgreSQL and the dashboard, not Python-minor details.
+      - if: matrix.resolution == 'highest' && matrix.python != '3.13'
+        run: >-
+          uv run --locked pytest --ignore=tests/test_scale.py --ignore=tests/test_dashboard.py
+          2>&1 | tee gate.log
+      # Floors are compatibility statements, not what we ship. Keep the static gate at the lower
+      # tool/dependency bounds, run functional tests, and omit the audit of intentionally old deps.
       - if: matrix.resolution != 'highest'
-        run: make check test 2>&1 | tee gate.log
+        run: |
+          make check 2>&1 | tee gate.log
+          uv run --locked pytest --ignore=tests/test_scale.py --ignore=tests/test_dashboard.py 2>&1 | tee -a gate.log
       # Failing tests as annotations: visible on the run page and through the API.
       - if: failure()
         run: grep -E "^(FAILED|ERROR) " gate.log | sed 's/^/::error::/' || true
@@ -99,7 +108,7 @@ jobs:
           uv venv --python ${{ matrix.python }} /tmp/base && uv pip install --python /tmp/base/bin/python dist/*.whl
           /tmp/base/bin/fronta --version && /tmp/base/bin/python -c "import fronta, sys; assert not any(m.startswith(('fastapi', 'mcp', 'uvicorn')) for m in sys.modules)"
           uv venv --python ${{ matrix.python }} /tmp/server && uv pip install --python /tmp/server/bin/python "$(ls dist/*.whl)[server]"
-          /tmp/server/bin/fronta server --help
+          /tmp/server/bin/fronta server --help && /tmp/server/bin/python -c "from fronta import Settings; from fronta.server import create_app; create_app(Settings(dsn='postgresql://x', server_token='x'))"
           uv venv --python ${{ matrix.python }} /tmp/sdist && uv pip install --python /tmp/sdist/bin/python dist/*.tar.gz
           /tmp/sdist/bin/fronta --version
 
@@ -129,8 +138,9 @@ jobs:
           "${pg_bin}/createdb" -h 127.0.0.1 -p 5439 -U fronta fronta
       - run: uv lock --check
       - run: uv sync --all-extras --locked
-      - run: uv run playwright install chromium
-      - run: make checkall 2>&1 | tee gate.log
+      - run: >-
+          uv run --locked pytest --ignore=tests/test_scale.py --ignore=tests/test_dashboard.py
+          2>&1 | tee gate.log
       - if: failure()
         run: grep -E "^(FAILED|ERROR) " gate.log | sed 's/^/::error::/' || true
       - run: uv build --no-sources
@@ -138,4 +148,4 @@ jobs:
           uv venv --python 3.13 /tmp/base && uv pip install --python /tmp/base/bin/python dist/*.whl
           /tmp/base/bin/fronta --version && /tmp/base/bin/python -c "import fronta, sys; assert sys.platform == 'darwin'; assert not any(m.startswith(('fastapi', 'mcp', 'uvicorn')) for m in sys.modules)"
           uv venv --python 3.13 /tmp/server && uv pip install --python /tmp/server/bin/python "$(ls dist/*.whl)[server]"
-          /tmp/server/bin/fronta server --help
+          /tmp/server/bin/fronta server --help && /tmp/server/bin/python -c "from fronta import Settings; from fronta.server import create_app; create_app(Settings(dsn='postgresql://x', server_token='x'))"

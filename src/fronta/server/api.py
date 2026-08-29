@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from datetime import datetime  # noqa: TC003  # pydantic evaluates the annotation at runtime
 from typing import Annotated, Any
 
@@ -22,7 +23,9 @@ def bearer_ok(authorization: str | None, token: str | None) -> bool:
     if token is None or authorization is None:
         return False
     scheme, _, value = authorization.partition(" ")
-    return scheme.lower() == "bearer" and value.strip() == token
+    return scheme.lower() == "bearer" and secrets.compare_digest(
+        value.strip().encode(), token.encode()
+    )
 
 
 def require_auth(request: Request) -> None:
@@ -88,10 +91,9 @@ async def list_tasks(  # noqa: PLR0913  # the filters, as specified
     limit: int | None = None,
 ) -> dict[str, Any]:
     settings = request.app.state.settings
-    items = await service.list_tasks(
-        TaskFilter(type, state, key, before, limit or settings.list_page_size)
-    )
-    page = min(max(limit or settings.list_page_size, 1), settings.list_page_max)
+    page = settings.list_page_size if limit is None else limit
+    items = await service.list_tasks(TaskFilter(type, state, key, before, page))
+    page = min(max(page, 1), settings.list_page_max)
     return {
         "items": [summary_to_dict(row) for row in items],
         "next": items[-1].id if len(items) == page else None,

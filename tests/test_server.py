@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
-import socket
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 import pytest_asyncio
-import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from fronta import Settings, State, Worker, store
 from fronta.model import NewTask
 from fronta.server import create_app
-from tests.conftest import FAST, wait_until
+from tests.conftest import FAST, free_port, serve, wait_until
 from tests.workers import sleep_task, timed_task
 
 if TYPE_CHECKING:
@@ -35,30 +32,6 @@ INITIALIZE = {
         "clientInfo": {"name": "t", "version": "0"},
     },
 }
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
-async def serve(app, port) -> AsyncIterator[str]:
-    instance = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
-    task = asyncio.create_task(instance.serve())
-    base = f"http://127.0.0.1:{port}"
-    async with httpx.AsyncClient() as client:
-        for _ in range(100):
-            try:
-                await client.get(base + "/")
-                break
-            except httpx.ConnectError:
-                await asyncio.sleep(0.05)
-    try:
-        yield base
-    finally:
-        instance.should_exit = True
-        await asyncio.wait_for(task, 20)
 
 
 @pytest_asyncio.fixture
@@ -253,6 +226,9 @@ async def test_list_returns_summaries_with_keyset_pagination_and_filters(api, co
     assert third["next"] is None
     capped = (await api.get("/tasks", params={"limit": 100})).json()
     assert len(capped["items"]) == 5  # list_page_max
+    clamped = (await api.get("/tasks", params={"limit": 0})).json()
+    assert [t["id"] for t in clamped["items"]] == ids[-1:]
+    assert clamped["next"] == ids[-1]
     by_key = (await api.get("/tasks", params={"key": "k2"})).json()
     assert [t["id"] for t in by_key["items"]] == [ids[2]]
     by_state = (await api.get("/tasks", params={"state": "running"})).json()
@@ -313,6 +289,9 @@ async def test_mcp_tools_mirror_the_rest_operations(server, conn):
         assert got.structured_content["input"] == {"n": 1}
         listed = await session.call_tool("list_tasks", {"state": "queued"})
         assert [t["id"] for t in listed.structured_content["items"]] == [task_id]
+        clamped = await session.call_tool("list_tasks", {"state": "queued", "limit": 0})
+        assert [t["id"] for t in clamped.structured_content["items"]] == [task_id]
+        assert clamped.structured_content["next"] == task_id
         cancelled = await session.call_tool("cancel", {"id": task_id})
         assert cancelled.structured_content == {"id": task_id, "state": "cancelled"}
         for name, args, text in [
@@ -343,17 +322,7 @@ async def test_mcp_without_a_token_is_rejected(server):
             headers={"Accept": "application/json, text/event-stream"},
         )
     assert response.status_code == 401
-    with pytest.raises(Exception, match=r"401|Unauthorized|TaskGroup"):
-        await _initialize_without_token(server)
-
-
-async def _initialize_without_token(server):
-    async with (
-        httpx.AsyncClient() as http,
-        streamable_http_client(server + "/mcp", http_client=http) as streams,
-        ClientSession(streams[0], streams[1]) as session,
-    ):
-        await session.initialize()
+    assert response.headers["www-authenticate"] == "Bearer"
 
 
 async def test_dashboard_serves_the_shell_and_alpine(server):
@@ -362,7 +331,8 @@ async def test_dashboard_serves_the_shell_and_alpine(server):
         assert page.status_code == 200
         assert "text/html" in page.headers["content-type"]
         assert 'x-data="dashboard()"' in page.text
-        assert "authRequired: true" in page.text
+        assert 'data-testid="token-input"' in page.text
+        assert "authRequired" not in page.text
         assert "/api/v1/tasks" in page.text
         alpine = await anon.get("/static/alpine.min.js")
         assert alpine.status_code == 200

@@ -47,7 +47,6 @@ Changelog = "https://github.com/dreo/fronta/blob/main/CHANGELOG.md"
 # `fronta server` (REST + MCP + dashboard); workers and the SDK do not need it.
 server = [
     "fastapi>=0.110,<1",                 # lifespan= and Annotated dependencies
-    "jinja2>=3.1,<4",
     "jsonschema[format-nongpl]>=4.20,<5",  # Draft 2020-12 + FORMAT_CHECKER
     "mcp>=2.1,<3",                       # MCPServer + streamable_http_app(host=, max_request_body_size=)
     "uvicorn>=0.31.1,<1",                  # timeout_graceful_shutdown=

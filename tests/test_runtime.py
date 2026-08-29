@@ -14,10 +14,10 @@ from tests.conftest import FAST
 async def test_pool_is_reused_per_loop_and_replaced_after_reconfiguration(settings):
     runtime.configure(settings)
     first = await runtime.open_pool()
-    assert await runtime.get_pool() is first
+    assert await runtime.open_pool() is first
     changed = Settings(dsn=settings.dsn, **{**FAST, "pool_size": 2})
     runtime.configure(changed)
-    second = await runtime.get_pool()
+    second = await runtime.open_pool()
     assert second is not first
     assert first.closed
     assert second.max_size == 2

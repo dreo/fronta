@@ -420,13 +420,14 @@ class Worker[StateT]:
     async def _start_checks(self) -> None:
         async with self.pool.connection() as conn:
             for definition in self.definitions.values():
-                previous = await store.publish_task_type(conn, definition.spec)
-                if previous is not None and previous != definition.spec.fingerprint:
+                spec = definition.spec
+                previous = await store.publish_task_type(conn, spec)
+                if previous is not None and previous != spec.fingerprint:
                     log.warning(
                         "definition of %r changed (fingerprint %s -> %s): last writer wins",
                         definition.name,
                         previous[:12],
-                        definition.spec.fingerprint[:12],
+                        spec.fingerprint[:12],
                     )
         probed: set[tuple[Any, ...]] = set()
         for definition in self.definitions.values():

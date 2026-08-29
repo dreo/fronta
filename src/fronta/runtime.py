@@ -94,10 +94,6 @@ async def open_pool(settings: Settings | None = None) -> AsyncConnectionPool[Any
         return entry[1]
 
 
-async def get_pool() -> AsyncConnectionPool[Any]:
-    return await open_pool()
-
-
 async def close_pool() -> None:
     """Close the pool of the current event loop, if any."""
     entry = _pools.pop(asyncio.get_running_loop(), None)

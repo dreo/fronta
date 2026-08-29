@@ -438,7 +438,7 @@ class SandboxProcess:
         if writer is None or stdout is None or stderr is None:  # pragma: no cover
             msg = "sandbox process was not spawned with pipes"
             raise RuntimeError(msg)
-        truncated = [False]
+        truncated = False
 
         async def feed() -> None:
             try:
@@ -450,13 +450,14 @@ class SandboxProcess:
                 writer.close()
 
         async def drain(stream: asyncio.StreamReader) -> bytes:
+            nonlocal truncated
             kept = bytearray()
             while chunk := await stream.read(65536):
                 room = max_output - len(kept)
                 if room > 0:
                     kept += chunk[:room]
                 if len(chunk) > room:
-                    truncated[0] = True
+                    truncated = True
             return bytes(kept)
 
         try:
@@ -480,7 +481,7 @@ class SandboxProcess:
             exit_code=exit_code,
             stdout=_text(out),
             stderr=_text(err),
-            truncated=truncated[0],
+            truncated=truncated,
         )
 
     def terminate(self) -> int:

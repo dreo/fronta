@@ -79,18 +79,19 @@ def make_mcp(service: Service) -> MCPServer[Any]:
         before: int | None = None,
         limit: int | None = None,
     ) -> dict[str, Any]:
+        page = service.settings.list_page_size if limit is None else limit
         try:
             flt = TaskFilter(
                 type,
                 None if state is None else State(state),
                 key,
                 before,
-                limit or service.settings.list_page_size,
+                page,
             )
         except ValueError as exc:
             raise ToolError(f"invalid state {state!r}") from exc
         items = await service.list_tasks(flt)
-        page = min(max(flt.limit, 1), service.settings.list_page_max)
+        page = min(max(page, 1), service.settings.list_page_max)
         return {
             "items": [summary_to_dict(row) for row in items],
             "next": items[-1].id if len(items) == page else None,

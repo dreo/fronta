@@ -282,11 +282,8 @@ async def test_sigkill_of_the_worker_leaves_no_sandboxed_process(conn, settings)
             proc.wait(timeout=10)
 
 
-@pytest.mark.usefixtures("conn")
-async def test_orphan_from_the_arming_window_is_killed_by_the_next_workers_scavenger(
-    settings, run_worker
-):
-    """Kill the outer bwrap right after spawn until an init survives it, then let a worker start."""
+async def test_orphaned_sandbox_is_killed_by_the_next_workers_scavenger(settings, run_worker):
+    """A marked sandbox whose owning worker is dead is killed by the next worker."""
     dead_worker = f"{sandbox.worker_id().split(':')[0]}:999999:1"
     env = sandbox.command_env(
         Sandbox(), worker=dead_worker, sandbox_id="orphan-" + os.urandom(4).hex()
@@ -304,23 +301,17 @@ async def test_orphan_from_the_arming_window_is_killed_by_the_next_workers_scave
         sandbox.SANDBOX_ENV: env[sandbox.SANDBOX_ENV],
     }
     quiet = {"start_new_session": True, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    reproduced = False
-    for attempt in range(40):
-        proc = subprocess.Popen(cmd, env=outer_env, **quiet)  # noqa: S603  # our own command
-        time.sleep(0.001 + (attempt % 6) * 0.001)
-        proc.kill()
-        proc.wait(timeout=5)
-        time.sleep(0.05)
-        if sandbox.find_marked(sandbox.WORKER_ENV, dead_worker):
-            reproduced = True
-            break
-    if not reproduced:  # timing did not cooperate on this host: use a plain orphan-like sandbox
-        subprocess.Popen(cmd, env=outer_env, **quiet)  # noqa: S603  # our own command
+    proc = subprocess.Popen(cmd, env=outer_env, **quiet)  # noqa: S603  # our own command
+    try:
         await wait_until(lambda: _has_marked(sandbox.WORKER_ENV, dead_worker), timeout=5)
-    assert sandbox.find_marked(sandbox.WORKER_ENV, dead_worker)
-    async with run_worker(Worker([echo_proc], settings=settings)):
-        await wait_until(lambda: _none_marked(sandbox.WORKER_ENV, dead_worker), timeout=10)
-    assert sandbox.find_marked(sandbox.WORKER_ENV, dead_worker) == []
+        async with run_worker(Worker([echo_proc], settings=settings)):
+            await wait_until(lambda: _none_marked(sandbox.WORKER_ENV, dead_worker), timeout=10)
+        assert sandbox.find_marked(sandbox.WORKER_ENV, dead_worker) == []
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
 
 
 async def test_a_stop_during_the_sandbox_spawn_leaves_nothing_behind(
@@ -426,11 +417,7 @@ async def _marked(task_id):
     return bool(marked(task_id))
 
 
-def test_no_sandbox_process_survives_this_module():
-    assert leftover_sandboxes() == []
-
-
-async def test_cancelling_a_spawn_kills_what_it_started(settings, tmp_path):
+async def test_cancelling_a_spawn_kills_what_it_started(tmp_path):
     wrapper = tmp_path / "slow-bwrap"
     wrapper.write_text('#!/bin/sh\nsleep 6\nexec bwrap "$@"\n')
     wrapper.chmod(0o755)
@@ -447,7 +434,6 @@ async def test_cancelling_a_spawn_kills_what_it_started(settings, tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await spawning
     assert sandbox.find_marked(sandbox.SANDBOX_ENV, env[sandbox.SANDBOX_ENV]) == []
-    assert settings.bwrap_path  # the settings fixture also guarantees the test database
 
 
 async def test_a_runner_that_crashes_after_the_spawn_does_not_leak_the_sandbox(

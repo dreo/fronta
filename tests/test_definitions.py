@@ -15,7 +15,7 @@ from pydantic import BaseModel, ValidationError
 from fronta import Backoff, Policy, Sandbox, Settings, Worker, process_task, runtime, store, task
 from fronta.cli import main
 from fronta.model import Executor, TaskTypeSpec
-from tests.conftest import fronta_cli, running
+from tests.conftest import fronta_cli
 from tests.workers import In, Out, limited_task, sleep_task
 
 
@@ -161,11 +161,6 @@ async def test_republishing_the_same_definition_is_silent(settings, run_worker, 
         async with run_worker(Worker([sleep_task], settings=settings)):
             pass
     assert not [r for r in caplog.records if "last writer wins" in r.message]
-
-
-async def test_running_is_a_context_manager_helper(settings):
-    async with running(Worker([sleep_task], settings=settings)) as worker:
-        assert worker.started.is_set()
 
 
 @pytest.mark.parametrize(

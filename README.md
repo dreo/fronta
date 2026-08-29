@@ -180,9 +180,10 @@ make check       # lint, format, types, architecture, deps (also the git pre-com
 make checkall    # check + the full test suite + pip-audit
 ```
 
-CI runs `make checkall` on every pull request and push to `main`: the Linux matrix covers Python
-3.12–3.14, lower dependency bounds, and real process sandboxes; a macOS leg covers the portable
-SDK, asyncio worker, and server. To release: set the version (`uv version X.Y.Z`), add the
+CI runs the full `make checkall` gate once on every pull request and push to `main`; compatibility
+legs cover Python 3.12–3.14, lower dependency bounds, real Linux process sandboxes, and the
+portable SDK, asyncio worker, and server on macOS without repeating the stress/browser tiers. To
+release: set the version (`uv version X.Y.Z`), add the
 CHANGELOG section, merge, then push the tag `vX.Y.Z` from that `main` commit; the gate runs again,
 the package goes to PyPI and a GitHub release is created. `SPEC.md` is the contract.
 

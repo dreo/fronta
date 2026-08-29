@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import os
-import socket
 import subprocess
 import sys
 import time
 from typing import TYPE_CHECKING
 
 import httpx
+import psycopg
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from tests.conftest import REPO, fronta_cli, wait_until, worker_env
+from tests.conftest import REPO, free_port, fronta_cli, wait_until, worker_env
 from tests.workers import In, sleep_task
 
 if TYPE_CHECKING:
@@ -24,16 +24,12 @@ TOKEN = "e2e-token"  # noqa: S105  # test fixture value
 LINUX = sys.platform == "linux"
 
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
 @pytest.fixture
 def stack(dsn, settings) -> Iterator[str]:
     """`fronta db init`, a worker and a server as real subprocesses; yields the server URL."""
     env = worker_env(settings, FRONTA_SERVER_TOKEN=TOKEN, FRONTA_DSN=dsn)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA fronta CASCADE")
     init = subprocess.run(  # noqa: S603  # our own CLI, fixed argv
         [fronta_cli(), "db", "init"], env=env, capture_output=True, text=True, check=False
     )
@@ -194,7 +190,7 @@ def test_worker_rejects_bad_targets(dsn):
     env = {**os.environ, "FRONTA_DSN": dsn}
     for target in (
         "nomodule",
-        "tests.subworkers",
+        "nomodule:worker",
         "tests.subworkers:nothing",
         "tests.workers:sleep_task",
     ):

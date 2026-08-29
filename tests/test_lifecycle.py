@@ -69,6 +69,7 @@ async def test_success_stores_every_json_value_kind(conn, settings, run_worker, 
         ("x" * (1024 * 1024 + 1), "cap"),
         ("nul\x00byte", "NUL"),
     ],
+    ids=("nan", "infinity", "object", "over-cap", "nul"),
 )
 @pytest.mark.usefixtures("sdk")
 async def test_unstorable_results_fail_without_retry(conn, settings, run_worker, value, reason):

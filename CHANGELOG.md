@@ -12,6 +12,16 @@ contracts (there is no migration tooling yet: run `fronta db init` on a fresh sc
 - macOS support for the SDK, asyncio-only workers, server, and development test suite. Sandboxed
   process tasks remain Linux-only.
 
+### Changed
+
+- The dashboard is now a static packaged asset; the server extra no longer depends on Jinja.
+- Expensive scale and browser tests run once per CI change instead of on every compatibility leg.
+
+### Fixed
+
+- REST and MCP now handle an explicit zero page limit consistently, and MCP authentication
+  failures include the standard bearer challenge header.
+
 ## [0.1.0] - 2026-08-29
 
 First release.

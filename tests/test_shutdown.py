@@ -16,7 +16,7 @@ from fronta import Sandbox, State, Worker, process_task, sandbox, store, task
 from fronta import worker as worker_module
 from fronta.model import NewTask
 from fronta.worker import EXIT_FATAL
-from tests.conftest import leftover_sandboxes, spawn_worker, wait_until, worker_env
+from tests.conftest import leftover_sandboxes, wait_until
 from tests.workers import In, blocker_task, long_proc, sleep_task, stubborn_task
 
 requires_linux = pytest.mark.skipif(
@@ -32,22 +32,6 @@ async def get(conn, task_id):
 
 async def is_running(conn, task_id):
     return (await get(conn, task_id)).state is State.RUNNING
-
-
-@pytest.fixture
-def subprocess_worker(settings):
-    procs = []
-
-    def start(target, **env):
-        proc = spawn_worker(target, worker_env(settings, **env))
-        procs.append(proc)
-        return proc
-
-    yield start
-    for proc in procs:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=10)
 
 
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
