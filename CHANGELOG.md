@@ -5,6 +5,13 @@ All notable changes to Fronta are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Pre-1.0, minor versions may change the schema and the
 contracts (there is no migration tooling yet: run `fronta db init` on a fresh schema).
 
+## Unreleased
+
+### Added
+
+- macOS support for the SDK, asyncio-only workers, server, and development test suite. Sandboxed
+  process tasks remain Linux-only.
+
 ## [0.1.0] - 2026-08-29
 
 First release.

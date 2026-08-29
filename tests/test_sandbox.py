@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 import time
 
 import psycopg
@@ -18,6 +19,9 @@ from tests.conftest import FAST, leftover_sandboxes, spawn_worker, wait_until, w
 from tests.workers import In, echo_proc, hostile_proc, long_proc, sleep_proc
 
 SH = "/bin/sh"
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="bubblewrap process sandboxes require Linux"
+)
 
 
 def script(name, body, **kwargs):
@@ -262,7 +266,7 @@ async def test_cooperative_process_gets_sigterm_and_exits_in_time(conn, settings
 async def test_sigkill_of_the_worker_leaves_no_sandboxed_process(conn, settings):
     await store.publish_task_type(conn, long_proc.spec)
     task_id = await store.enqueue(conn, _new_task(long_proc, In()))
-    proc = spawn_worker("tests.subworkers:crash_worker", worker_env(settings))
+    proc = spawn_worker("tests.subworkers:sandbox_crash_worker", worker_env(settings))
     try:
         await wait_until(lambda: _state(conn, task_id, State.RUNNING), timeout=20)
         await wait_until(lambda: _marked(task_id), timeout=10)

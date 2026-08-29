@@ -453,6 +453,9 @@ class Worker[StateT]:
             log.warning("scavenged %d orphaned sandbox processes", killed)
 
     async def _serve(self) -> None:
+        # A Worker may be constructed long before it starts. The watchdog measures event-loop
+        # progress while serving, so its baseline must begin here rather than in __init__.
+        self._last_tick = time.monotonic()
         watchdog = threading.Thread(target=self._watchdog, name="fronta-watchdog", daemon=True)
         watchdog.start()
         loops = [

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import sys
 import threading
 import time
 from typing import Any
@@ -17,6 +18,10 @@ from fronta.model import NewTask
 from fronta.worker import EXIT_FATAL
 from tests.conftest import leftover_sandboxes, spawn_worker, wait_until, worker_env
 from tests.workers import In, blocker_task, long_proc, sleep_task, stubborn_task
+
+requires_linux = pytest.mark.skipif(
+    sys.platform != "linux", reason="sandbox process management requires Linux"
+)
 
 
 async def get(conn, task_id):
@@ -250,6 +255,7 @@ async def test_the_watchdog_thread_ends_with_the_worker(settings, run_worker):
     await wait_until(lambda: _threads_back_to(before), timeout=5)
 
 
+@requires_linux
 async def test_a_failing_scavenger_does_not_stop_the_reaper(
     conn, settings, run_worker, monkeypatch, caplog
 ):
@@ -355,6 +361,7 @@ async def test_the_release_of_an_unstarted_claim_retries_through_an_outage(
     assert row.failures == 0
 
 
+@requires_linux
 async def test_a_second_signal_during_phase_two_settles_a_process_runner_and_its_sandbox(
     conn, settings, monkeypatch, caplog
 ):

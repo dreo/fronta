@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
+import sys
 import time
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 TOKEN = "e2e-token"  # noqa: S105  # test fixture value
+LINUX = sys.platform == "linux"
 
 
 def free_port() -> int:
@@ -38,12 +40,15 @@ def stack(dsn, settings) -> Iterator[str]:
     assert init.returncode == 0, init.stderr
     assert "ready" in init.stdout
     port = free_port()
-    worker = subprocess.Popen(  # noqa: S603  # our own CLI, fixed argv
-        [fronta_cli(), "worker", "tests.subworkers:e2e_worker"],
-        cwd=REPO,
-        env=env,
-        stderr=subprocess.PIPE,
-    )
+    targets = ["tests.subworkers:e2e_worker"]
+    if LINUX:
+        targets.append("tests.subworkers:e2e_process_worker")
+    workers = [
+        subprocess.Popen(  # noqa: S603  # our own CLI, fixed argv
+            [fronta_cli(), "worker", target], cwd=REPO, env=env, stderr=subprocess.PIPE
+        )
+        for target in targets
+    ]
     server = subprocess.Popen(  # noqa: S603  # our own CLI, fixed argv
         [fronta_cli(), "server", "--port", str(port)], cwd=REPO, env=env, stderr=subprocess.PIPE
     )
@@ -60,12 +65,13 @@ def stack(dsn, settings) -> Iterator[str]:
                 time.sleep(0.1)
         yield base
     finally:
-        for proc in (server, worker):
+        for proc in (server, *workers):
             if proc.poll() is None:
                 proc.terminate()
-        for proc in (server, worker):
+        for proc in (server, *workers):
             proc.wait(timeout=30)
-        assert worker.returncode == 0, worker.stderr.read().decode()
+        for worker in workers:
+            assert worker.returncode == 0, worker.stderr.read().decode()
 
 
 @pytest.mark.usefixtures("sdk")
@@ -73,15 +79,17 @@ async def test_end_to_end(stack):
     headers = {"Authorization": f"Bearer {TOKEN}"}
     async with httpx.AsyncClient(base_url=stack, headers=headers, timeout=10) as api:
         # The worker published its definitions.
-        await wait_until(
-            lambda: _has_types(api, {"sleep", "echo_proc", "progress", "state"}), timeout=30
-        )
+        expected_types = {"sleep", "progress", "state"}
+        if LINUX:
+            expected_types.add("echo_proc")
+        await wait_until(lambda: _has_types(api, expected_types), timeout=30)
 
         # Enqueue via the SDK (process-global pool from FRONTA_DSN), REST and MCP.
         sdk_id = await sleep_task.enqueue(In(n=1, sleep_s=0.2))
-        rest = await api.post("/api/v1/tasks", json={"type": "echo_proc", "input": {"n": 2}})
+        rest = await api.post("/api/v1/tasks", json={"type": "state", "input": {"n": 2}})
         assert rest.status_code == 201
         rest_id = rest.json()["id"]
+        process_id = await _enqueue_process(api)
         async with (
             httpx.AsyncClient(headers=headers) as http,
             streamable_http_client(stack + "/mcp", http_client=http) as streams,
@@ -93,14 +101,16 @@ async def test_end_to_end(stack):
             mcp_id = created.structured_content["id"]
 
         # State and results via REST.
-        for task_id in (sdk_id, rest_id, mcp_id):
+        task_ids = [sdk_id, rest_id, mcp_id]
+        if process_id is not None:
+            task_ids.append(process_id)
+        for task_id in task_ids:
             await wait_until(lambda tid=task_id: _succeeded(api, tid), timeout=30)
         sdk_row = (await api.get(f"/api/v1/tasks/{sdk_id}")).json()
         assert sdk_row["result"]["n"] == 1
-        echo_row = (await api.get(f"/api/v1/tasks/{rest_id}")).json()
-        assert echo_row["result"]["exit_code"] == 0
-        assert '{"n":2' in echo_row["result"]["stdout"]
-        assert "FRONTA_DSN" not in echo_row["result"]["stdout"]
+        state_row = (await api.get(f"/api/v1/tasks/{rest_id}")).json()
+        assert state_row["result"] == {"resource": "ready", "cancelled": False}
+        await _assert_process_result(api, process_id)
         progress_row = (await api.get(f"/api/v1/tasks/{mcp_id}")).json()
         assert progress_row["progress"] == {"step": 2, "n": 3}
         assert progress_row["result"] == {"done": True}
@@ -115,11 +125,7 @@ async def test_end_to_end(stack):
             got = await session.call_tool("get_task", {"id": sdk_id})
             assert got.structured_content["state"] == "succeeded"
             listed = await session.call_tool("list_tasks", {"state": "succeeded"})
-            assert {t["id"] for t in listed.structured_content["items"]} >= {
-                sdk_id,
-                rest_id,
-                mcp_id,
-            }
+            assert {t["id"] for t in listed.structured_content["items"]} >= set(task_ids)
 
         # Cancel a running task.
         running = await api.post("/api/v1/tasks", json={"type": "sleep", "input": {"sleep_s": 60}})
@@ -147,6 +153,23 @@ async def test_end_to_end(stack):
 async def _has_types(api, names):
     response = await api.get("/api/v1/task-types")
     return response.status_code == 200 and {t["name"] for t in response.json()} >= names
+
+
+async def _enqueue_process(api):
+    if not LINUX:
+        return None
+    response = await api.post("/api/v1/tasks", json={"type": "echo_proc", "input": {"n": 2}})
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+async def _assert_process_result(api, task_id):
+    if task_id is None:
+        return
+    row = (await api.get(f"/api/v1/tasks/{task_id}")).json()
+    assert row["result"]["exit_code"] == 0
+    assert '{"n":2' in row["result"]["stdout"]
+    assert "FRONTA_DSN" not in row["result"]["stdout"]
 
 
 async def _succeeded(api, task_id):

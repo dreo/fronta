@@ -68,7 +68,8 @@ async def timed_claims(conn, types, n):
 
 
 def fds() -> int:
-    return len(list(Path("/proc/self/fd").iterdir()))
+    root = Path("/proc/self/fd")
+    return len(list((root if root.exists() else Path("/dev/fd")).iterdir()))
 
 
 # ---------------------------------------------------------------- long backlogs

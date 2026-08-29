@@ -1,8 +1,9 @@
 name: ci
 
 # Every pull request and every push to `main` runs the full gate (`make checkall`: lint, types,
-# architecture, the test suite against PostgreSQL 16 with real sandboxes, pip-audit) on each
-# supported Python, plus the declared lower bounds, and installs the built wheel.
+# architecture, the test suite against PostgreSQL 16, pip-audit) on Linux with real sandboxes and
+# on macOS for the portable surface. Linux covers each supported Python plus the declared lower
+# bounds; both platforms install the built wheel.
 on:
   push:
     branches: [main]
@@ -15,6 +16,11 @@ concurrency:
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    # Explicit bash adds `-o pipefail`, so `make ... | tee gate.log` cannot mask a failed gate.
+    shell: bash
 
 jobs:
   check:
@@ -96,3 +102,40 @@ jobs:
           /tmp/server/bin/fronta server --help
           uv venv --python ${{ matrix.python }} /tmp/sdist && uv pip install --python /tmp/sdist/bin/python dist/*.tar.gz
           /tmp/sdist/bin/fronta --version
+
+  macos:
+    name: macOS / Python 3.13
+    runs-on: macos-latest
+    env:
+      FRONTA_TEST_DSN: postgresql://fronta@127.0.0.1:5439/fronta
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          version: "0.11.18"
+          python-version: "3.13"
+      # GitHub service containers require Linux. Use Homebrew's keg-only PostgreSQL 16 in an
+      # isolated cluster instead of relying on whichever database a runner image may include.
+      - name: Start PostgreSQL 16
+        run: |
+          brew install postgresql@16
+          pg_bin="$(brew --prefix postgresql@16)/bin"
+          pg_data="${RUNNER_TEMP}/fronta-pg"
+          echo "${pg_bin}" >> "${GITHUB_PATH}"
+          "${pg_bin}/initdb" -D "${pg_data}" --username=fronta --auth=trust
+          "${pg_bin}/pg_ctl" -D "${pg_data}" -l "${RUNNER_TEMP}/fronta-pg.log" -o "-h 127.0.0.1 -p 5439" start
+          "${pg_bin}/createdb" -h 127.0.0.1 -p 5439 -U fronta fronta
+      - run: uv lock --check
+      - run: uv sync --all-extras --locked
+      - run: uv run playwright install chromium
+      - run: make checkall 2>&1 | tee gate.log
+      - if: failure()
+        run: grep -E "^(FAILED|ERROR) " gate.log | sed 's/^/::error::/' || true
+      - run: uv build --no-sources
+      - run: |
+          uv venv --python 3.13 /tmp/base && uv pip install --python /tmp/base/bin/python dist/*.whl
+          /tmp/base/bin/fronta --version && /tmp/base/bin/python -c "import fronta, sys; assert sys.platform == 'darwin'; assert not any(m.startswith(('fastapi', 'mcp', 'uvicorn')) for m in sys.modules)"
+          uv venv --python 3.13 /tmp/server && uv pip install --python /tmp/server/bin/python "$(ls dist/*.whl)[server]"
+          /tmp/server/bin/fronta server --help

@@ -5,6 +5,7 @@ Distributed task processing on PostgreSQL with sandboxed process execution.
 ## 1. Scope
 
 - V1: Python SDK, asyncio and sandboxed-process executors, PostgreSQL queue, worker CLI, server CLI (REST + MCP + web dashboard), db CLI.
+- Supported hosts: Linux and macOS for the SDK, server, and asyncio-only workers; Linux for workers containing process tasks.
 - Pre-deployment: breaking changes to schema and contracts are preferred over compatibility paths.
 - Non-goals: cron; workflows (no DAG engine, dependencies, or automatic triggers); non-PostgreSQL backends; non-Linux sandboxing; result streaming; multi-tenancy.
 

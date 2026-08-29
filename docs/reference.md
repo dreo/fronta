@@ -34,7 +34,7 @@ startup. The important ones:
 | `FRONTA_PAYLOAD_CAP` / `FRONTA_RESULT_CAP` | 1 MiB | UTF-8 bytes of the JSON encoding |
 | `FRONTA_PROGRESS_CAP` / `FRONTA_ERROR_CAP` | 64 KiB | |
 | `FRONTA_SERVER_HOST` / `FRONTA_SERVER_PORT` / `FRONTA_SERVER_TOKEN` | 127.0.0.1 / 8000 / required | the server never runs without a token |
-| `FRONTA_BWRAP_PATH` | `bwrap` | |
+| `FRONTA_BWRAP_PATH` | `bwrap` | Linux workers containing process tasks only |
 | `LOG_LEVEL_OURS` / `LOG_LEVEL_LIBS` | INFO / WARNING | log levels for Fronta and for libraries |
 
 Fronta's connections carry an `application_name` (`fronta-worker`, `fronta-listener`,
@@ -62,7 +62,7 @@ the values last published by a worker and are enforced exactly.
   to the queue without charging a failure. The worker exits only when every outcome is recorded:
   with the database unreachable it keeps retrying instead of losing a completed attempt; a second
   signal skips the grace period and, if a write is still stuck, leaves that task to the reaper.
-- Sandboxed processes die with the worker (`--die-with-parent`); a sandbox orphaned in
+- On Linux, sandboxed processes die with the worker (`--die-with-parent`); a sandbox orphaned in
   bubblewrap's few-millisecond startup window is killed by the next worker with process tasks
   that starts on the host. CPU time
   and memory rlimits are per process; the PID limit and the tmpfs bounds are sandbox-wide.

@@ -61,8 +61,10 @@ def require_linux() -> None:
 
 
 def worker_id() -> str:
-    """`host:pid:starttime` — unique per boot; `is_worker_alive` re-derives liveness from it."""
-    return f"{socket.gethostname()}:{os.getpid()}:{_starttime(os.getpid())}"
+    """`host:pid:starttime-or-nonce` — unique even on hosts without Linux `/proc`."""
+    pid = os.getpid()
+    identity = _starttime(pid) or f"nonce-{uuid4().hex}"
+    return f"{socket.gethostname()}:{pid}:{identity}"
 
 
 def _starttime(pid: int) -> str | None:
@@ -83,7 +85,18 @@ def is_worker_alive(worker: str) -> bool | None:
         pid = int(parts[1])
     except ValueError:
         return None
-    return _starttime(pid) == parts[2]
+    if pid <= 0 or parts[2].startswith("nonce-"):
+        return None
+    starttime = _starttime(pid)
+    if starttime is not None:
+        return starttime == parts[2]
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass
+    return None
 
 
 class Pidfd:
