@@ -7,6 +7,8 @@ contracts (there is no migration tooling yet: run `fronta db init` on a fresh sc
 
 ## Unreleased
 
+## [0.3.0] - 2026-08-29
+
 ### Added
 
 - Public live lifecycle subscriptions (`subscribe_events()` and `TaskEvent`) plus SDK task lookup
