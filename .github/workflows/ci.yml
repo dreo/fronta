@@ -87,6 +87,8 @@ jobs:
       # and the sdist.
       - run: uv build --no-sources
       - run: uvx twine check dist/*
+        env:
+          UV_RESOLUTION: highest   # tooling resolves highest even on the lowest-bounds leg
       - run: |
           uv venv --python ${{ matrix.python }} /tmp/base && uv pip install --python /tmp/base/bin/python dist/*.whl
           /tmp/base/bin/fronta --version && /tmp/base/bin/python -c "import fronta, sys; assert not any(m.startswith(('fastapi', 'mcp', 'uvicorn')) for m in sys.modules)"

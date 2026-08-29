@@ -171,7 +171,10 @@ async def stress_api(stress_server):
         base_url=stress_server + "/api/v1",
         headers={"Authorization": f"Bearer {TOKEN}"},
         timeout=30,
-        limits=httpx.Limits(max_connections=100),
+        # uvicorn closes idle keep-alive connections after 5 s and httpx's default expiry is
+        # also 5 s, so a connection reused right at that boundary dies mid-request
+        # (`ReadError`; measured 1 in 100 at a 4.9 s idle gap, and CI's slower phases hit it).
+        limits=httpx.Limits(max_connections=100, keepalive_expiry=1.0),
     ) as client:
         yield client
 
