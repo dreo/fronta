@@ -1,4 +1,5 @@
--- Fronta V1 schema. Idempotent: every statement is IF NOT EXISTS. Applied by `fronta db init`.
+-- Fronta V1 schema. Idempotent: every statement is IF NOT EXISTS (or a no-op on rerun). Applied
+-- by `fronta db init`.
 
 CREATE SCHEMA IF NOT EXISTS fronta;
 
@@ -40,14 +41,20 @@ CREATE TABLE IF NOT EXISTS fronta.tasks (
     run_at              timestamptz NOT NULL DEFAULT now(),
     started_at          timestamptz,
     finished_at         timestamptz
-);
+) WITH (fillfactor = 90);
+
+-- Heartbeats rewrite `lease_until` every few seconds. It is deliberately not indexed and the table
+-- keeps 10% free space per page, so those updates stay heap-only (no index entries, no dead index
+-- tuples, a third of the WAL). The reaper finds the few running rows through tasks_state_idx.
+ALTER TABLE fronta.tasks SET (fillfactor = 90);
+DROP INDEX IF EXISTS fronta.tasks_lease_idx;
 
 CREATE UNIQUE INDEX IF NOT EXISTS tasks_active_key_uidx ON fronta.tasks (type, key)
     WHERE key IS NOT NULL AND state IN ('queued', 'running');
 CREATE INDEX IF NOT EXISTS tasks_queue_idx ON fronta.tasks (priority DESC, run_at, id) WHERE state = 'queued';
-CREATE INDEX IF NOT EXISTS tasks_lease_idx ON fronta.tasks (lease_until) WHERE state = 'running';
 CREATE INDEX IF NOT EXISTS tasks_running_key_idx ON fronta.tasks (type, concurrency_key) WHERE state = 'running';
 CREATE INDEX IF NOT EXISTS tasks_finished_idx ON fronta.tasks (finished_at)
     WHERE state IN ('succeeded', 'failed', 'cancelled');
 CREATE INDEX IF NOT EXISTS tasks_type_state_idx ON fronta.tasks (type, state, id);
 CREATE INDEX IF NOT EXISTS tasks_state_idx ON fronta.tasks (state, id);
+CREATE INDEX IF NOT EXISTS tasks_key_idx ON fronta.tasks (key, id) WHERE key IS NOT NULL;  -- list by key over history

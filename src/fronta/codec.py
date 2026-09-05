@@ -5,6 +5,7 @@ Caps count UTF-8 bytes of the compact JSON encoding (`separators=(",", ":")`, no
 
 from __future__ import annotations
 
+import codecs
 import json
 import traceback
 from typing import TYPE_CHECKING, Any
@@ -14,9 +15,33 @@ if TYPE_CHECKING:
 
 _JSON_KW: dict[str, Any] = {"separators": (",", ":"), "ensure_ascii": False, "allow_nan": False}
 
+MAX_DEPTH = 200
+"""Nesting levels accepted in a stored value; deeper structures are rejected before any recursion
+limit can turn a deterministic bad value into a retryable failure."""
+
+_REPLACEMENT = "�"
+
+
+def _replace_lone_surrogates(err: UnicodeError) -> tuple[bytes, int]:
+    """Codec error handler: one U+FFFD per code point that has no UTF-8 encoding.
+
+    The replacement is returned as bytes: the UTF-8 encoder accepts only ASCII text replacements
+    from a handler and would reject U+FFFD itself.
+    """
+    if isinstance(err, UnicodeEncodeError):
+        return _REPLACEMENT.encode("utf-8") * (err.end - err.start), err.end
+    raise err  # pragma: no cover  # only registered for encoding
+
+
+codecs.register_error("fronta_replace", _replace_lone_surrogates)
+
 
 class Unstorable(ValueError):
-    """The value cannot live in a `jsonb` column (NUL characters, NaN, infinity)."""
+    """The value cannot live in a `jsonb` column.
+
+    NUL characters, lone surrogates (no UTF-8 encoding), NaN/infinity, circular references and
+    nesting deeper than `MAX_DEPTH`.
+    """
 
 
 class OverCap(ValueError):
@@ -26,37 +51,66 @@ class OverCap(ValueError):
 def encode(value: JSON) -> str:
     """Compact JSON.
 
-    Raises `Unstorable` for NaN/inf and for NUL characters (which `jsonb` rejects), and
-    `TypeError` for anything that is not JSON: unknown objects and non-string mapping keys
-    (`json.dumps` would silently turn `{1: ...}` into `{"1": ...}`).
+    Raises `Unstorable` for NaN/inf, NUL characters and lone surrogates (which `jsonb` and UTF-8
+    reject), circular references and excessive depth, and `TypeError` for anything that is not
+    JSON: unknown objects and non-string mapping keys (`json.dumps` would silently turn
+    `{1: ...}` into `{"1": ...}`).
     """
-    _check(value)
+    _check(value, 0, set())
     try:
         return json.dumps(value, **_JSON_KW)
     except ValueError as exc:
         raise Unstorable(str(exc)) from exc
 
 
-def _check(value: object) -> None:
+def _check_text(text: str) -> None:
+    if "\x00" in text:
+        msg = "NUL characters cannot be stored in jsonb"
+        raise Unstorable(msg)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        msg = "lone surrogate code points cannot be stored (no UTF-8 encoding)"
+        raise Unstorable(msg) from exc
+
+
+def _check(value: object, depth: int, path: set[int]) -> None:
+    """Validate storability without unbounded recursion: depth is capped, cycles are detected."""
     if isinstance(value, str):
-        if "\x00" in value:
-            msg = "NUL characters cannot be stored in jsonb"
-            raise Unstorable(msg)
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                msg = f"mapping keys must be strings, got {type(key).__name__}"
-                raise TypeError(msg)
-            _check(key)
-            _check(item)
-    elif isinstance(value, list | tuple):
-        for item in value:
-            _check(item)
+        _check_text(value)
+        return
+    if not isinstance(value, dict | list | tuple):
+        return
+    if depth >= MAX_DEPTH:
+        msg = f"value is nested deeper than {MAX_DEPTH} levels"
+        raise Unstorable(msg)
+    if id(value) in path:
+        msg = "circular reference in value"
+        raise Unstorable(msg)
+    path.add(id(value))
+    try:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    msg = f"mapping keys must be strings, got {type(key).__name__}"
+                    raise TypeError(msg)
+                _check_text(key)
+                _check(item, depth + 1, path)
+        else:
+            for item in value:
+                _check(item, depth + 1, path)
+    finally:
+        path.discard(id(value))
 
 
 def sanitize(text: str) -> str:
-    """Make text storable: NUL is the one code point `jsonb` rejects."""
-    return text.replace("\x00", "\ufffd")
+    """Make text storable: NUL and lone surrogates become U+FFFD."""
+    text = text.replace("\x00", _REPLACEMENT)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = text.encode("utf-8", "fronta_replace").decode("utf-8")
+    return text
 
 
 def utf8_len(text: str) -> int:
@@ -74,10 +128,22 @@ def encode_capped(value: JSON, cap: int, what: str) -> str:
 
 
 def error_metadata(exc: BaseException, cap: int) -> dict[str, Any]:
-    """Structured error for a failed attempt: type, message, traceback — truncated to `cap`."""
-    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    """Structured error for a failed attempt: type, message, traceback — truncated to `cap`.
+
+    Always returns a storable value: formatting failures of the exception itself (a broken
+    `__str__`, unencodable text) degrade to a placeholder instead of raising.
+    """
+    name = type(exc).__qualname__
+    try:
+        message = str(exc)
+    except Exception as failure:  # a broken __str__ must not lose the outcome
+        message = f"<{name}: str() raised {type(failure).__qualname__}>"
+    try:
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    except Exception as failure:  # same: the traceback is optional metadata
+        tb = f"<traceback unavailable: {type(failure).__qualname__}>"
     return truncate(
-        {"type": type(exc).__qualname__, "message": sanitize(str(exc)), "traceback": sanitize(tb)},
+        {"type": name, "message": sanitize(message), "traceback": sanitize(tb)},
         cap,
         keep_tail=("traceback",),
     )

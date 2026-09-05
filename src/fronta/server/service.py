@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
+import psycopg
 from jsonschema import Draft202012Validator
 
 from fronta import codec, runtime, store
@@ -122,8 +123,13 @@ class Service:
                     return await store.enqueue(
                         conn, new_task, deadline_s=self.settings.statement_timeout_s
                     )
-            except ValueError as exc:  # oversized key / name
-                raise InvalidInput(str(exc)) from exc
+            except InvalidInput:
+                raise
+            except psycopg.DataError as exc:
+                # Backstop for a value the database refuses (range, text encoding): user input,
+                # not an outage. Connection and programming errors keep surfacing as 500.
+                msg = f"invalid input: {exc}"
+                raise InvalidInput(msg) from exc
 
     def _validate(self, row: TaskTypeRow, input: dict[str, Any]) -> None:
         validator = self._validators.get(row.fingerprint)

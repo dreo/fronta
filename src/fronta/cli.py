@@ -102,6 +102,8 @@ def worker(target: str) -> None:
         sys.exit(asyncio.run(instance.run()))
     except psycopg.OperationalError as exc:  # could not reach the database at start
         raise click.ClickException(f"database unavailable: {exc}") from exc
+    except ConfigurationError as exc:  # e.g. no FRONTA_DSN
+        raise click.ClickException(str(exc)) from exc
 
 
 @main.command()
@@ -123,7 +125,7 @@ def server(host: str | None, port: int | None) -> None:
         k: v for k, v in {"server_host": host, "server_port": port}.items() if v is not None
     }
     try:
-        settings = Settings()  # type: ignore[call-arg]  # pydantic-settings reads FRONTA_DSN
+        settings = Settings()  # type: ignore[call-arg]  # mypy misses pydantic Field defaults
         if overrides:
             settings = Settings(**{**settings.model_dump(), **overrides})  # re-validated
     except ValidationError as exc:

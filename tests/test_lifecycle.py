@@ -10,7 +10,7 @@ from typing import Any
 import psycopg
 import pytest
 
-from fronta import ProgressTooLarge, Settings, State, Worker, store, task
+from fronta import Backoff, ProgressTooLarge, Settings, State, Worker, store, task
 from fronta import worker as worker_module
 from fronta.model import NewTask
 from tests.conftest import FAST, wait_until
@@ -404,3 +404,73 @@ async def test_non_string_keys_fail_without_retry_and_tuples_become_arrays(
     assert bad_row.error["type"] == "ResultSerializationError"
     assert "keys must be strings" in bad_row.error["message"]
     assert good_row.result == [1, "two"]
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_cyclic_and_too_deep_results_fail_without_retry(conn, settings, run_worker):
+    @task("cyclic", input=In, attempt_timeout=30)
+    async def cyclic(ctx: Any, inp: In) -> Any:
+        del ctx, inp
+        loop: dict[str, Any] = {}
+        loop["me"] = loop
+        return loop
+
+    @task("deep", input=In, attempt_timeout=30)
+    async def deep(ctx: Any, inp: In) -> Any:
+        del ctx, inp
+        value: Any = []
+        for _ in range(5000):
+            value = [value]
+        return value
+
+    async with run_worker(Worker([cyclic, deep], settings=settings)):
+        cyclic_id = await cyclic.enqueue(In())
+        deep_id = await deep.enqueue(In())
+        rows = [
+            await settled(conn, cyclic_id, State.FAILED),
+            await settled(conn, deep_id, State.FAILED),
+        ]
+    for row in rows:
+        assert row.attempt == 1  # deterministic bad results never retry
+        assert row.failures == 1
+        assert row.error["type"] == "ResultSerializationError"
+    assert "circular" in rows[0].error["message"]
+    assert "deeper" in rows[1].error["message"]
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_unencodable_exception_text_keeps_the_normal_failure_path(
+    conn, settings, run_worker, caplog
+):
+    class Broken(Exception):
+        def __str__(self) -> str:
+            msg = "no str for you"
+            raise ValueError(msg)
+
+    @task("surrogate", input=In, max_attempts=2, backoff=Backoff(0.1, 2.0, 0.2), attempt_timeout=30)
+    async def surrogate(ctx: Any, inp: In) -> None:
+        del ctx, inp
+        msg = "bad \udcff byte"
+        raise RuntimeError(msg)
+
+    @task("broken_str", input=In, max_attempts=1, attempt_timeout=30)
+    async def broken_str(ctx: Any, inp: In) -> None:
+        del ctx, inp
+        raise Broken
+
+    with caplog.at_level(logging.ERROR, logger="fronta.worker"):
+        async with run_worker(Worker([surrogate, broken_str, sleep_task], settings=settings)):
+            surrogate_id = await surrogate.enqueue(In())
+            broken_id = await broken_str.enqueue(In())
+            surrogate_row = await settled(conn, surrogate_id, State.FAILED)
+            broken_row = await settled(conn, broken_id, State.FAILED)
+            after = await sleep_task.enqueue(In(n=8))  # the worker keeps processing
+            after_row = await settled(conn, after, State.SUCCEEDED)
+    assert surrogate_row.attempt == 2  # retried once, like any RuntimeError
+    assert surrogate_row.failures == 2
+    assert surrogate_row.error["type"] == "RuntimeError"
+    assert surrogate_row.error["message"] == "bad \ufffd byte"
+    assert broken_row.error["type"].endswith("Broken")  # the qualified name
+    assert "str() raised" in broken_row.error["message"]
+    assert after_row.result["n"] == 8
+    assert not [r for r in caplog.records if "controller crashed" in r.message]

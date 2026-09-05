@@ -4,13 +4,24 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import psycopg
 import pytest
 
-from fronta import PayloadTooLarge, State, Worker, store
+from fronta import (
+    ConfigurationError,
+    InvalidInput,
+    PayloadTooLarge,
+    Settings,
+    State,
+    Worker,
+    runtime,
+    store,
+    task,
+)
 from fronta.model import NewTask, Policy, TaskTypeSpec
-from tests.conftest import wait_until
+from tests.conftest import FAST, wait_until
 from tests.workers import In, sleep_task
 
 
@@ -190,3 +201,60 @@ async def test_enqueue_without_key_never_dedupes(conn):
 async def _is(conn, task_id, state):
     row = await store.get_task(conn, task_id)
     return row is not None and row.state is state
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_priority_and_key_bounds_are_enforced_before_the_insert(conn):
+    await publish(conn, sleep_task)
+    ids = [
+        await sleep_task.enqueue(In(), priority=-(2**31)),
+        await sleep_task.enqueue(In(), priority=2**31 - 1),
+        await sleep_task.enqueue(In(), key="é" * 512),  # exactly 1024 bytes
+    ]
+    assert len(set(ids)) == 3
+    for kwargs, message in [
+        ({"priority": 2**31}, "priority"),
+        ({"priority": -(2**31) - 1}, "priority"),
+        ({"key": "é" * 513}, "key must be"),
+        ({"key": "a\x00b"}, "NUL"),
+        ({"concurrency_key": "\udcff"}, "Unicode"),
+    ]:
+        with pytest.raises(InvalidInput, match=message):
+            await sleep_task.enqueue(In(), **kwargs)
+    with pytest.raises(InvalidInput, match="surrogate"):
+        await sleep_task.enqueue(In(key="\udcff"))
+    cur = await conn.execute("SELECT count(*) FROM fronta.tasks")
+    assert (await cur.fetchone())[0] == 3
+
+
+async def test_enqueue_with_a_caller_connection_needs_no_dsn(conn, monkeypatch):
+    monkeypatch.delenv("FRONTA_DSN", raising=False)
+    monkeypatch.setattr(runtime, "_settings", None)
+    await publish(conn, sleep_task)
+    task_id = await sleep_task.enqueue(In(n=1), conn=conn)
+    assert (await store.get_task(conn, task_id)).input["n"] == 1
+    assert runtime.get_settings().dsn is None
+    with pytest.raises(ConfigurationError, match="FRONTA_DSN"):
+        await sleep_task.enqueue(In(n=2))  # only the pool path needs a DSN
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_worker_context_enqueue_uses_the_workers_own_caps(conn, dsn, settings, run_worker):
+    small = Settings(dsn=dsn, **{**FAST, "payload_cap": 2048})
+
+    @task("parent", input=In, attempt_timeout=30)
+    async def parent(ctx: Any, inp: In) -> str:
+        del inp
+        try:
+            await ctx.enqueue(sleep_task, In(key="x" * 3000))
+        except PayloadTooLarge:
+            return "capped"
+        return "not capped"
+
+    async with run_worker(Worker([parent, sleep_task], settings=small)):
+        runtime.configure(settings)  # the SDK singleton is back at the default cap ...
+        big = await sleep_task.enqueue(In(key="x" * 3000))  # ... which accepts this ...
+        parent_id = await parent.enqueue(In())
+        await wait_until(lambda: _is(conn, parent_id, State.SUCCEEDED))
+    assert (await store.get_task(conn, parent_id)).result == "capped"  # ... unlike the worker
+    assert (await store.get_task(conn, big)).state is not State.FAILED

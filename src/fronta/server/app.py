@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from importlib import resources
 from typing import TYPE_CHECKING
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.transport_security import TransportSecuritySettings
 
 from fronta.errors import (
     ConfigurationError,
@@ -32,6 +36,33 @@ if TYPE_CHECKING:
 
 BODY_LIMIT_MARGIN = 64 * 1024
 """Bytes allowed on top of the payload cap for the JSON envelope around the input."""
+
+_LOOPBACK_HOSTS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+_LOOPBACK_ORIGINS = ("http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*")
+
+
+def transport_security(settings: Settings) -> TransportSecuritySettings | None:
+    """DNS-rebinding protection for the MCP endpoint: loopback plus the configured public names.
+
+    With nothing configured the MCP SDK's own defaults apply: loopback hosts only on a loopback
+    bind, no check on other binds. `FRONTA_SERVER_ALLOWED_HOSTS` / `_ORIGINS` add the names a
+    reverse proxy forwards (a bare host also matches any port) while keeping the check enabled.
+    """
+    hosts = settings.allowed_hosts()
+    origins = settings.allowed_origins()
+    if not hosts and not origins:
+        return None
+    allowed_hosts = list(_LOOPBACK_HOSTS)
+    for host in hosts:
+        allowed_hosts.append(host)
+        if not host.endswith(":*") and ":" not in host.rsplit("]", 1)[-1]:
+            allowed_hosts.append(f"{host}:*")
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=[*_LOOPBACK_ORIGINS, *origins],
+    )
+
 
 _STATUS_BY_ERROR: dict[type[Exception], int] = {
     UnknownTaskType: 404,
@@ -150,6 +181,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     for error, status in _STATUS_BY_ERROR.items():
         app.add_exception_handler(error, _handler(status))
+    app.add_exception_handler(RequestValidationError, _request_validation)
 
     package = resources.files("fronta.server")
     page = (package / "static" / "index.html").read_text(encoding="utf-8")
@@ -164,6 +196,7 @@ def create_app(settings: Settings) -> FastAPI:
     mcp_app = mcp.streamable_http_app(
         streamable_http_path="/mcp",
         max_request_body_size=settings.payload_cap + BODY_LIMIT_MARGIN,
+        transport_security=transport_security(settings),
         host=settings.server_host,
     )
     app.mount("/", BearerGate(mcp_app, settings.server_token), name="mcp")
@@ -171,11 +204,26 @@ def create_app(settings: Settings) -> FastAPI:
     return app
 
 
-def _handler(status: int) -> Callable[[Request, Exception], Awaitable[JSONResponse]]:
-    async def handle(_: Request, exc: Exception) -> JSONResponse:
-        return JSONResponse({"detail": str(exc)}, status_code=status)
+def _json(payload: object, status: int) -> Response:
+    """A JSON error response that survives any input.
+
+    `ensure_ascii` escapes code points without a UTF-8 encoding: a lone surrogate echoed from a
+    rejected field would otherwise turn the error into a 500.
+    """
+    body = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    return Response(body, status_code=status, media_type="application/json")
+
+
+def _handler(status: int) -> Callable[[Request, Exception], Awaitable[Response]]:
+    async def handle(_: Request, exc: Exception) -> Response:
+        return _json({"detail": str(exc)}, status)
 
     return handle
+
+
+async def _request_validation(_: Request, exc: Exception) -> Response:
+    errors = exc.errors() if isinstance(exc, RequestValidationError) else [str(exc)]
+    return _json({"detail": jsonable_encoder(errors)}, 422)
 
 
 def serve(settings: Settings) -> None:
