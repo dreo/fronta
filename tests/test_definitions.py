@@ -12,7 +12,18 @@ import pytest
 from click.testing import CliRunner
 from pydantic import BaseModel, ValidationError
 
-from fronta import Backoff, Policy, Sandbox, Settings, Worker, process_task, runtime, store, task
+from fronta import (
+    Backoff,
+    ConfigurationError,
+    Policy,
+    Sandbox,
+    Settings,
+    Worker,
+    process_task,
+    runtime,
+    store,
+    task,
+)
 from fronta.cli import main
 from fronta.model import Executor, TaskTypeSpec
 from tests.conftest import fronta_cli
@@ -116,8 +127,29 @@ def test_building_a_worker_needs_no_environment(monkeypatch):
     monkeypatch.delenv("FRONTA_DSN", raising=False)
     monkeypatch.setattr(runtime, "_settings", None)
     worker = Worker([sleep_task])  # a task module imports anywhere, e.g. under pytest or mypy
-    with pytest.raises(ValidationError):
-        _ = worker.settings  # FRONTA_* is read when the worker starts
+    assert worker.settings.dsn is None  # FRONTA_* is read when the worker starts ...
+
+
+async def test_a_worker_without_a_dsn_fails_at_start_with_a_clear_error(monkeypatch):
+    monkeypatch.delenv("FRONTA_DSN", raising=False)
+    with pytest.raises(ConfigurationError, match="FRONTA_DSN"):
+        await Worker([sleep_task], settings=Settings()).run()  # ... and only a DSN is missing
+
+
+async def test_definitions_are_published_atomically(conn, settings, monkeypatch):
+    """A failed publish leaves no partial definition set behind."""
+    original = store.publish_task_type
+
+    async def flaky(conn_, spec):
+        if spec.name == "limited":
+            msg = "simulated publish failure"
+            raise RuntimeError(msg)
+        return await original(conn_, spec)
+
+    monkeypatch.setattr(store, "publish_task_type", flaky)
+    with pytest.raises(RuntimeError, match="simulated publish failure"):
+        await Worker([sleep_task, limited_task], settings=settings).run()
+    assert await store.get_task_types(conn) == []
 
 
 async def test_worker_start_publishes_schemas_policy_and_limits(conn, settings, run_worker):
@@ -171,6 +203,10 @@ async def test_republishing_the_same_definition_is_silent(settings, run_worker, 
         {"payload_cap": 10},
         {"progress_cap": 1},
         {"heartbeat_s": 30, "lease_s": 30},
+        {"heartbeat_s": 20, "lease_s": 30},  # no room for a retried renewal
+        {"lease_s": float("inf")},
+        {"grace_s": float("nan")},
+        {"statement_timeout_s": float("inf")},
         {"connect_timeout_s": 0.2},
         {"server_port": 70000},
     ],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -300,6 +301,8 @@ async def test_mcp_tools_mirror_the_rest_operations(server, conn):
             ("get_task", {"id": 424242}, "TaskNotFound"),
             ("enqueue", {"type": "nope", "input": {}}, "UnknownTaskType"),
             ("enqueue", {"type": "sleep", "input": {"n": "x"}}, "InvalidInput"),
+            ("enqueue", {"type": "sleep", "input": {}, "priority": 2**31}, "InvalidInput"),
+            ("enqueue", {"type": "sleep", "input": {}, "key": "a\x00b"}, "InvalidInput"),
             (
                 "enqueue",
                 {"type": "sleep", "input": {}, "run_at": "2030-01-01T00:00:00"},
@@ -373,3 +376,83 @@ def test_the_server_never_runs_without_a_token(dsn):
         create_app(Settings(dsn=dsn, **FAST))
     assert not bearer_ok(None, None)
     assert not bearer_ok("Bearer anything", None)
+
+
+@pytest.mark.usefixtures("published")
+async def test_invalid_arguments_are_422_and_insert_nothing(api, conn):
+    rejected = [
+        {"type": "sleep", "input": {}, "priority": 2**31},
+        {"type": "sleep", "input": {}, "priority": -(2**31) - 1},
+        {"type": "sleep", "input": {}, "key": "a\x00b"},
+        {"type": "sleep", "input": {}, "concurrency_key": "\udcff"},
+        {"type": "sleep", "input": {"key": "\udcff"}},
+        {"type": "sleep", "input": {}, "key": "é" * 513},
+    ]
+    for body in rejected:
+        # Sent as ASCII-escaped JSON: a lone surrogate has no UTF-8 form for httpx to encode.
+        response = await api.post(
+            "/tasks", content=json.dumps(body), headers={"Content-Type": "application/json"}
+        )
+        assert response.status_code == 422, (body, response.text)
+    cur = await conn.execute("SELECT count(*) FROM fronta.tasks")
+    assert (await cur.fetchone())[0] == 0
+    accepted = [
+        {"type": "sleep", "input": {}, "priority": 2**31 - 1},
+        {"type": "sleep", "input": {}, "priority": -(2**31)},
+        {"type": "sleep", "input": {}, "key": "é" * 512},
+    ]
+    for body in accepted:
+        response = await api.post("/tasks", json=body)
+        assert response.status_code == 201, (body, response.text)
+
+
+PROXY_HOST = "fronta.example.com"
+
+
+@pytest_asyncio.fixture
+async def proxied(dsn) -> AsyncIterator[str]:
+    """A server whose MCP endpoint is reached through a proxy that keeps the public hostname."""
+    port = free_port()
+    settings = Settings(
+        dsn=dsn,
+        **{
+            **FAST,
+            "server_token": TOKEN,
+            "server_port": port,
+            "server_allowed_hosts": f"{PROXY_HOST}, api.example.com:8443",
+            "server_allowed_origins": f"https://{PROXY_HOST}",
+        },
+    )
+    async for base in serve(create_app(settings), port):
+        yield base
+
+
+@pytest.mark.usefixtures("published")
+async def test_mcp_behind_a_reverse_proxy_accepts_the_configured_names_only(proxied):
+    async with (
+        httpx.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}", "Host": PROXY_HOST}) as http,
+        streamable_http_client(proxied + "/mcp", http_client=http) as streams,
+        ClientSession(streams[0], streams[1]) as session,
+    ):
+        await session.initialize()
+        assert "enqueue" in [t.name for t in (await session.list_tools()).tools]
+        created = await session.call_tool("enqueue", {"type": "sleep", "input": {"n": 1}})
+        assert not created.is_error
+    mcp = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+    bearer = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient() as anon:
+        for headers, status in [
+            ({**mcp, **bearer, "Host": PROXY_HOST}, 200),
+            ({**mcp, **bearer, "Host": "api.example.com:8443"}, 200),
+            ({**mcp, **bearer, "Host": "127.0.0.1:9"}, 200),  # loopback stays allowed
+            ({**mcp, **bearer, "Host": PROXY_HOST, "Origin": f"https://{PROXY_HOST}"}, 200),
+            ({**mcp, **bearer, "Host": "evil.example.com"}, 421),
+            ({**mcp, **bearer, "Host": PROXY_HOST, "Origin": "https://evil.example.com"}, 403),
+            ({**mcp, "Host": PROXY_HOST}, 401),
+        ]:
+            response = await anon.post(proxied + "/mcp", json=INITIALIZE, headers=headers)
+            assert response.status_code == status, (headers, response.status_code, response.text)
+        rest = await anon.get(
+            proxied + "/api/v1/task-types", headers={**bearer, "Host": PROXY_HOST}
+        )
+        assert rest.status_code == 200

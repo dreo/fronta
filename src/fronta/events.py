@@ -57,7 +57,7 @@ async def subscribe_events(
         runtime.configure(settings)
     current = runtime.get_settings()
     conn = await psycopg.AsyncConnection.connect(
-        current.dsn,
+        runtime.dsn_of(current),
         autocommit=True,
         connect_timeout=max(1, math.ceil(current.connect_timeout_s)),
         application_name="fronta-events",

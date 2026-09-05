@@ -9,6 +9,7 @@ Every worker write is fenced by `state = 'running' AND token = $token`.
 from __future__ import annotations
 
 import json
+import math
 import time
 from enum import StrEnum
 from importlib import resources
@@ -19,6 +20,7 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
+from fronta.errors import InvalidInput
 from fronta.model import (
     MAX_KEY_BYTES,
     MAX_NAME_BYTES,
@@ -83,21 +85,33 @@ SELECT id FROM fronta.tasks
 WHERE type = %(type)s AND key = %(key)s AND state IN ('queued', 'running')
 """)
 
+# The saturated types and keys are computed once per claim (materialized CTEs) and looked up per
+# candidate row through hashed subplans (`NOT IN`), so the candidate walk stays an ordered index
+# scan that stops at the first eligible row; the per-row recount this replaces cost O(backlog of
+# a saturated type) on every claim. `NOT IN` (never `NOT EXISTS`) keeps the planner from turning
+# the skip into an anti-join over the whole queue. Neither CTE can yield NULLs.
 _CANDIDATE = sql.SQL("""
+WITH saturated_types AS MATERIALIZED (
+    SELECT ty.name FROM fronta.task_types ty
+    WHERE ty.name = ANY(%(types)s) AND ty.max_concurrency IS NOT NULL
+      AND ty.max_concurrency <= (
+        SELECT count(*) FROM fronta.tasks r WHERE r.type = ty.name AND r.state = 'running')
+), saturated_keys AS MATERIALIZED (
+    SELECT r.type, r.concurrency_key
+    FROM fronta.tasks r JOIN fronta.task_types ty ON ty.name = r.type
+    WHERE r.state = 'running' AND r.type = ANY(%(types)s) AND r.concurrency_key IS NOT NULL
+      AND ty.max_concurrency_per_key IS NOT NULL
+    GROUP BY r.type, r.concurrency_key, ty.max_concurrency_per_key
+    HAVING count(*) >= ty.max_concurrency_per_key
+)
 SELECT {cols}
 FROM fronta.tasks t
 WHERE t.state = 'queued' AND t.run_at <= now() AND t.type = ANY(%(types)s)
   AND t.id <> ALL(%(skip)s)
-  AND EXISTS (
-    SELECT 1 FROM fronta.task_types ty
-    WHERE ty.name = t.type
-      AND (ty.max_concurrency IS NULL OR ty.max_concurrency > (
-            SELECT count(*) FROM fronta.tasks r WHERE r.type = t.type AND r.state = 'running'))
-      AND (t.concurrency_key IS NULL OR ty.max_concurrency_per_key IS NULL
-           OR ty.max_concurrency_per_key > (
-            SELECT count(*) FROM fronta.tasks r
-            WHERE r.type = t.type AND r.concurrency_key = t.concurrency_key
-              AND r.state = 'running')))
+  AND EXISTS (SELECT 1 FROM fronta.task_types ty WHERE ty.name = t.type)
+  AND t.type NOT IN (SELECT name FROM saturated_types)
+  AND (t.concurrency_key IS NULL
+       OR (t.type, t.concurrency_key) NOT IN (SELECT type, concurrency_key FROM saturated_keys))
 ORDER BY t.priority DESC, t.run_at, t.id
 LIMIT 1 FOR UPDATE OF t SKIP LOCKED
 """).format(cols=_columns(_TASK_COLUMNS, "t."))
@@ -114,20 +128,32 @@ SELECT count(*) AS by_type,
 FROM fronta.tasks WHERE type = %(type)s AND state = 'running'
 """)
 
+# Lease timestamps use clock_timestamp(): the moment the row is written, after every lock the
+# transaction waited for. now() is the transaction start, which a claim blocked on the type's
+# row could leave far in the past and hand out a lease that is already partly consumed.
 _START = sql.SQL("""
 UPDATE fronta.tasks
 SET state = 'running', attempt = attempt + 1, token = %(token)s,
-    lease_until = now() + make_interval(secs => %(lease_s)s), started_at = now(),
+    lease_until = clock_timestamp() + make_interval(secs => %(lease_s)s), started_at = now(),
     worker = %(worker)s, progress = NULL
 WHERE id = %(id)s
 RETURNING {cols}
 """).format(cols=_columns(_TASK_COLUMNS))
 
+# The row is locked first: an UPDATE evaluates its new values before it waits for a row lock, so
+# a heartbeat blocked behind another writer would otherwise carry a stamp from before the wait.
 _HEARTBEAT = sql.SQL("""
-UPDATE fronta.tasks SET lease_until = now() + make_interval(secs => %(lease_s)s)
-WHERE id = %(id)s AND state = 'running' AND token = %(token)s
-RETURNING cancel_requested_at
+WITH locked AS (
+    SELECT id FROM fronta.tasks
+    WHERE id = %(id)s AND state = 'running' AND token = %(token)s
+    FOR UPDATE)
+UPDATE fronta.tasks t
+SET lease_until = clock_timestamp() + make_interval(secs => %(lease_s)s)
+FROM locked WHERE t.id = locked.id
+RETURNING t.cancel_requested_at
 """)
+
+_LOCK_TIMEOUT = sql.SQL("SELECT set_config('lock_timeout', %(timeout)s, true)")
 
 _PROGRESS = sql.SQL("""
 UPDATE fronta.tasks SET progress = %(progress)s::jsonb
@@ -258,16 +284,43 @@ def new_token() -> UUID:
     return uuid4()
 
 
+MIN_PRIORITY = -(2**31)
+MAX_PRIORITY = 2**31 - 1
+"""`priority` is a PostgreSQL integer."""
+
+
+def _check_text(value: str, what: str, max_bytes: int) -> None:
+    """Text the database will store: 1..max UTF-8 bytes, no NUL, no lone surrogates."""
+    if "\x00" in value:
+        msg = f"{what} must not contain NUL characters"
+        raise InvalidInput(msg)
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        msg = f"{what} must be valid Unicode text (lone surrogates cannot be stored)"
+        raise InvalidInput(msg) from exc
+    if not 1 <= size <= max_bytes:
+        msg = f"{what} must be 1..{max_bytes} UTF-8 bytes"
+        raise InvalidInput(msg)
+
+
 def check_name(name: str) -> None:
-    if not 1 <= len(name.encode("utf-8")) <= MAX_NAME_BYTES:
-        msg = f"task type name must be 1..{MAX_NAME_BYTES} UTF-8 bytes"
-        raise ValueError(msg)
+    _check_text(name, "task type name", MAX_NAME_BYTES)
 
 
 def check_key(value: str | None, what: str) -> None:
-    if value is not None and not 1 <= len(value.encode("utf-8")) <= MAX_KEY_BYTES:
-        msg = f"{what} must be 1..{MAX_KEY_BYTES} UTF-8 bytes"
-        raise ValueError(msg)
+    if value is not None:
+        _check_text(value, what, MAX_KEY_BYTES)
+
+
+def check_priority(value: int) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not (MIN_PRIORITY <= value <= MAX_PRIORITY)
+    ):
+        msg = f"priority must be an integer in [{MIN_PRIORITY}, {MAX_PRIORITY}], got {value!r}"
+        raise InvalidInput(msg)
 
 
 def _task(rec: dict[str, Any]) -> TaskRow:
@@ -360,9 +413,10 @@ async def enqueue(conn: Conn, task: NewTask, deadline_s: float = 30.0) -> int:
     check_name(task.type)
     check_key(task.key, "key")
     check_key(task.concurrency_key, "concurrency_key")
+    check_priority(task.priority)
     if task.run_at is not None and task.run_at.tzinfo is None:
         msg = "run_at must be timezone-aware"
-        raise ValueError(msg)
+        raise InvalidInput(msg)
     params = {
         "type": task.type,
         "priority": task.priority,
@@ -400,8 +454,14 @@ async def enqueue(conn: Conn, task: NewTask, deadline_s: float = 30.0) -> int:
 # Claim and the fenced writes of a running attempt
 
 
-async def claim(
-    conn: Conn, *, types: list[str], worker: str, lease_s: float, deadline_s: float
+async def claim(  # noqa: PLR0913  # every argument is a distinct input of the claim
+    conn: Conn,
+    *,
+    types: list[str],
+    worker: str,
+    lease_s: float,
+    deadline_s: float,
+    lock_timeout_s: float | None = None,
 ) -> TaskRow | None:
     """Claim one eligible task or return None. Each round is one transaction.
 
@@ -411,29 +471,38 @@ async def claim(
     unlimited type only share-lock the row, so a concurrent publish that enables a limit waits
     for them. A candidate that lost the race is skipped for the rest of this call; the call ends
     when no candidate is left or `deadline_s` passed.
+
+    The lease is stamped when the row is written, after any lock wait, so a returned row always
+    carries a full lease. Lock waits are bounded by `lock_timeout_s` (default: half the lease): a
+    type row held longer than that ends the call with None, and the next poll tries again.
     """
     skip: list[int] = []
     deadline = time.monotonic() + deadline_s
+    lock_ms = max(1, math.ceil((lease_s / 2 if lock_timeout_s is None else lock_timeout_s) * 1000))
     while True:
-        async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(_CANDIDATE, {"types": types, "skip": skip})
-            rec = await cur.fetchone()
-            if rec is None:
-                return None
-            task_id: int = rec["id"]
-            task_type: str = rec["type"]
-            if not await _within_limits(conn, task_type, rec["concurrency_key"]):
-                skip.append(task_id)
-                raise psycopg.Rollback
-            await cur.execute(
-                _START,
-                {"token": new_token(), "lease_s": lease_s, "worker": worker, "id": task_id},
-            )
-            started = await cur.fetchone()
-            if started is None:  # pragma: no cover  # impossible: the row is locked by us
-                raise psycopg.Rollback
-            await _event(conn, task_id, task_type, State.RUNNING)
-            return _task(started)
+        try:
+            async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(_LOCK_TIMEOUT, {"timeout": f"{lock_ms}ms"})
+                await cur.execute(_CANDIDATE, {"types": types, "skip": skip})
+                rec = await cur.fetchone()
+                if rec is None:
+                    return None
+                task_id: int = rec["id"]
+                task_type: str = rec["type"]
+                if not await _within_limits(conn, task_type, rec["concurrency_key"]):
+                    skip.append(task_id)
+                    raise psycopg.Rollback
+                await cur.execute(
+                    _START,
+                    {"token": new_token(), "lease_s": lease_s, "worker": worker, "id": task_id},
+                )
+                started = await cur.fetchone()
+                if started is None:  # pragma: no cover  # impossible: the row is locked by us
+                    raise psycopg.Rollback
+                await _event(conn, task_id, task_type, State.RUNNING)
+                return _task(started)
+        except psycopg.errors.LockNotAvailable:
+            return None  # a type row held past the bound: give up this round, never a stale lease
         if time.monotonic() > deadline:
             return None
 

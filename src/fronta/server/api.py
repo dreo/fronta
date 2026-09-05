@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from fronta.model import State, TaskFilter
 from fronta.server.service import Service, summary_to_dict, task_to_dict, task_type_to_dict
+from fronta.store import MAX_PRIORITY, MIN_PRIORITY
 
 
 def get_service(request: Request) -> Service:
@@ -44,7 +45,7 @@ router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_auth)])
 class EnqueueRequest(BaseModel):
     type: str = Field(min_length=1, max_length=255)
     input: dict[str, Any]
-    priority: int = 0
+    priority: int = Field(0, ge=MIN_PRIORITY, le=MAX_PRIORITY)
     run_at: datetime | None = None
     key: str | None = Field(None, min_length=1, max_length=1024)
     concurrency_key: str | None = Field(None, min_length=1, max_length=1024)

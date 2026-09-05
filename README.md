@@ -83,6 +83,10 @@ once that task has finished, the same key enqueues a new one.
 A handler gets the validated input and a `Context` (`task_id`, `attempt`, `log`, `progress()`,
 `enqueue()`, `cancelled`, `state` from the worker lifespan). It must handle
 `asyncio.CancelledError` and be safe to run twice: after a lost lease the task runs again.
+Inputs are stored as the model's JSON by alias (the shape of the published schema) and validated
+again in JSON mode at claim, so strict and aliased fields survive the round trip; an input that
+would not, or an invalid argument (priority outside the integer range, NUL in a key, a naive
+`run_at`), is refused by `enqueue` with `InvalidInput` before anything is written.
 
 ## Lifecycle events
 
@@ -151,15 +155,20 @@ The Python SDK enqueues, reads one task, and subscribes to lifecycle events; lis
 cancellation go through the server. `FRONTA_SERVER_TOKEN` is required (the server never runs open:
 even on loopback a browser could be made to cancel or enqueue tasks); every REST and MCP request
 sends it as `Authorization: Bearer <token>`. Put a TLS-terminating reverse proxy in front of it
-outside a private network. Endpoints, inputs and error codes:
-[docs/reference.md](https://github.com/dreo/fronta/blob/main/docs/reference.md#server).
+outside a private network; a proxy that forwards the public hostname must be listed in
+`FRONTA_SERVER_ALLOWED_HOSTS` (and its origin in `FRONTA_SERVER_ALLOWED_ORIGINS`), or the MCP
+endpoint's DNS-rebinding protection answers 421. Endpoints, inputs, error codes and a proxy
+example: [docs/reference.md](https://github.com/dreo/fronta/blob/main/docs/reference.md#server).
 
 ## Deploy
 
 One database, any number of workers, optionally a server. Each process reads `FRONTA_*`
-environment variables; `FRONTA_DSN` is the only required one. Run workers under a supervisor that
-restarts them: a worker exits 0 after a graceful stop and 70 when a handler ignores cancellation or
-blocks the event loop.
+environment variables; `FRONTA_DSN` is the only required one (and only where Fronta opens its own
+connections: enqueueing through your own connection needs none). A worker holds `FRONTA_POOL_SIZE`
+connections plus one for notifications and one reserved for lease renewals, so a saturated pool
+never costs a healthy task its lease. Run workers under a supervisor that restarts them: a worker
+exits 0 after a graceful stop, 70 when a handler ignores cancellation or blocks the event loop, and
+71 when one of its background loops dies of an unexpected error.
 
 ```ini
 # /etc/systemd/system/fronta-worker.service
@@ -195,6 +204,19 @@ Throughput is bounded by the database's commit rate (at least two durable commit
 heartbeats and progress): about 150 no-op tasks/s in total on a laptop PostgreSQL with fsync; a
 claim costs ~5 ms on a 70k-row queue. Configuration, retry policy, guarantees and the
 measurements: [docs/reference.md](https://github.com/dreo/fronta/blob/main/docs/reference.md).
+
+## Changing a task's contract
+
+Claims route by name, so a worker of an older version happily claims inputs written for a newer
+one and fails them permanently when the schema is incompatible, and the last worker to start
+publishes the limits and schema for the whole fleet. The safe procedure for an incompatible change
+is a new name: declare `resize_v2`, start its workers, switch producers, and keep the old workers
+until the old name's queued, scheduled and retrying work has drained. A same-name change must stay
+compatible for the whole overlap, or needs a drained, coordinated deployment. Dedupe and
+concurrency keys are scoped by name, so a versioned rollout splits their domains (the combined
+concurrency of both names can exceed either limit); do not produce the same business work under
+both names. The SDK snapshots the retry policy of the definition it enqueues with; the server
+snapshots the published one.
 
 ## Not covered
 

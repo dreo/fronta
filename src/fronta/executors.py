@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
 
 from fronta import codec
+from fronta.definitions import dump_input, load_input
 from fronta.errors import InputValidationError, ResultSerializationError, SandboxError
 from fronta.sandbox import SandboxProcess, command_env
 
@@ -17,14 +19,19 @@ if TYPE_CHECKING:
     from fronta.definitions import Context, ProcessTaskDefinition, TaskDefinition
     from fronta.model import TaskRow
 
+log = logging.getLogger("fronta.executors")
+
 
 class Execution(Protocol):
     """One attempt. `run()` returns the encoded JSON result or raises."""
 
     async def run(self) -> str: ...
 
-    def stop(self) -> None:
-        """Ask the attempt to end (cancel the handler / SIGTERM the sandbox). Idempotent."""
+    async def stop(self) -> None:
+        """Ask the attempt to end (cancel the handler / SIGTERM the sandbox). Idempotent.
+
+        Bounded: a graceful stop never blocks the caller beyond the kill timeout.
+        """
 
     async def kill(self, timeout_s: float) -> bool:
         """Force the attempt to end; True when it is verified over (always True for asyncio)."""
@@ -39,23 +46,28 @@ class ProcessFailed(Exception):
 
 
 def validate_input(definition: TaskDefinition[Any, Any], row: TaskRow) -> BaseModel:
+    """Validate the stored input in JSON mode (aliases and field names both accepted)."""
     try:
-        model: BaseModel = definition.input_model.model_validate(row.input)
-    except ValidationError as exc:
+        model: BaseModel = load_input(definition.input_model, codec.encode(row.input))
+    except (ValidationError, ValueError, TypeError) as exc:
         msg = f"input of task {row.id} does not match {definition.input_model.__name__}: {exc}"
         raise InputValidationError(msg) from exc
     return model
 
 
 def encode_result(definition: TaskDefinition[Any, Any], value: object, cap: int) -> str:
-    """Validate against the output model (if any) and encode; anything else is a final failure."""
+    """Validate against the output model (if any) and encode; anything else is a final failure.
+
+    Cycles and excessive depth are caught by the codec before recursion could turn them into a
+    retryable `RecursionError`; the recursion error itself is mapped as a backstop.
+    """
     try:
         if definition.output_model is not None:
             value = definition.output_model.model_validate(value).model_dump(mode="json")
         elif isinstance(value, BaseModel):
             value = value.model_dump(mode="json")
         return codec.encode_capped(value, cap, "result")  # type: ignore[arg-type]  # checked by dumps
-    except (ValidationError, TypeError, ValueError) as exc:
+    except (ValidationError, TypeError, ValueError, RecursionError) as exc:
         msg = f"result of task {definition.name!r} cannot be stored: {exc}"
         raise ResultSerializationError(msg) from exc
 
@@ -80,7 +92,7 @@ class AsyncioExecution:
         value = await handler(self.ctx, model)
         return encode_result(self.definition, value, self.result_cap)
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
 
@@ -115,7 +127,7 @@ class ProcessExecution:
 
     async def run(self) -> str:
         model = validate_input(self.definition, self.row)
-        stdin = codec.encode(model.model_dump(mode="json")).encode("utf-8")
+        stdin = codec.encode(dump_input(model)).encode("utf-8")
         self._spawning = True
         try:
             self._proc = await SandboxProcess.spawn(
@@ -139,7 +151,7 @@ class ProcessExecution:
             self._spawning = False
             self._spawned.set()
         if self._stopped:  # stop() arrived while spawning
-            self.stop()
+            await self.stop()
         result = await self._proc.run(stdin, self.definition.sandbox.max_output_bytes)
         if result.exit_code != 0:
             metadata: dict[str, Any] = {
@@ -152,11 +164,24 @@ class ProcessExecution:
             )
         return encode_result(self.definition, result.to_json(), self.result_cap)
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
+        """SIGTERM the sandbox's processes from a thread, within the kill timeout.
+
+        The discovery walks `/proc`, whose cost grows with the host's process count, so it must
+        not run on the event loop. A signal the thread delivers after the bound is harmless
+        (pidfd plus marker recheck), and the hard kill remains the backstop.
+        """
         self._stopped = True
-        if self._proc is not None:
-            with contextlib.suppress(OSError):  # best effort: the hard kill is the backstop
-                self._proc.terminate()
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            async with asyncio.timeout(self.kill_timeout_s):
+                await asyncio.to_thread(proc.terminate)
+        except TimeoutError:
+            log.warning("graceful stop of sandbox %s is slow; the kill backstops", proc.sandbox_id)
+        except OSError as exc:  # best effort: /proc or pidfd trouble
+            log.warning("graceful stop of sandbox %s failed: %s", proc.sandbox_id, exc)
 
     async def kill(self, timeout_s: float) -> bool:
         """Hard-kill the sandbox; True once it is verified dead.

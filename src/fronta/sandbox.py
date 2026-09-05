@@ -549,8 +549,9 @@ async def _abort(
             proc.kill()
     # A configured bwrap wrapper or bwrap's init can outlive the outer process. This is especially
     # important before --die-with-parent is armed: kill every descendant under its UUID-scoped
-    # marker, using the same pidfd/recheck protocol as established sandboxes.
-    signal_marked(SANDBOX_ENV, sandbox_id, signal.SIGKILL)
+    # marker, using the same pidfd/recheck protocol as established sandboxes. The /proc walk
+    # runs in a thread: its cost grows with the host's process count.
+    await asyncio.to_thread(signal_marked, SANDBOX_ENV, sandbox_id, signal.SIGKILL)
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(proc.wait(), timeout_s)
     if proc.stderr is None:

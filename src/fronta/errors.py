@@ -45,8 +45,14 @@ class NotCancellable(FrontaError):
     """The task is already terminal."""
 
 
-class InvalidInput(FrontaError):
-    """Server-side input does not match the published JSON schema."""
+class InvalidInput(FrontaError, ValueError):
+    """An enqueue argument or a server-side input was rejected before anything was written.
+
+    Raised for inputs that do not match the model or the published JSON schema, keys and names
+    outside their byte bounds or carrying NUL / lone surrogates, priorities outside the database
+    range, naive `run_at` values, and inputs that would not survive the queue round trip. It is
+    also a `ValueError`, so callers that caught `ValueError` before keep working.
+    """
 
 
 class SandboxError(FrontaError):

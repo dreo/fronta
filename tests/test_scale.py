@@ -25,13 +25,16 @@ TOKEN = "stress-token"  # noqa: S105  # test fixture value
 
 BULK = """
 INSERT INTO fronta.tasks (type, state, input, priority, run_at, max_attempts, attempt_timeout_s,
-    backoff_base_s, backoff_factor, backoff_cap_s, finished_at)
+    backoff_base_s, backoff_factor, backoff_cap_s, finished_at, concurrency_key, token, lease_until)
 SELECT %(type)s, %(state)s, '{}', (random() * %(priorities)s)::int,
        now() + make_interval(secs => %(offset_s)s + (random() * %(spread_s)s)::int),
        3, 30, 1, 2, 3600,
        CASE WHEN %(state)s IN ('succeeded', 'failed', 'cancelled')
-            THEN now() - make_interval(secs => %(age_s)s) END
-FROM generate_series(1, %(n)s)
+            THEN now() - make_interval(secs => %(age_s)s) END,
+       CASE WHEN %(keys)s > 0 THEN 'ck' || (g %% %(keys)s)::text END,
+       CASE WHEN %(state)s = 'running' THEN gen_random_uuid() END,
+       CASE WHEN %(state)s = 'running' THEN now() + interval '1 hour' END
+FROM generate_series(1, %(n)s) AS g
 """
 
 
@@ -45,6 +48,7 @@ async def bulk(conn, task_type, n, **shape):
         "offset_s": -3600,
         "spread_s": 3600,
         "age_s": 0,
+        "keys": 0,
         **shape,
     }
     await conn.execute(BULK, params)
@@ -85,8 +89,8 @@ async def test_claims_stay_fast_on_a_sixty_thousand_row_backlog(conn):
         sql.SQL("EXPLAIN ") + store._CANDIDATE, {"types": ["sleep", "limited"], "skip": []}
     )
     plan = "\n".join(row[0] for row in await cur.fetchall())
-    assert "tasks_queue_idx" in plan  # walked in claim order ...
-    assert "Sort" not in plan  # ... never sorted
+    assert "Index Scan using tasks_queue_idx on tasks t" in plan  # walked in claim order ...
+    assert "Sort Key: t.priority" not in plan  # ... never sorted
     durations = await timed_claims(conn, ["sleep", "limited"], 50)
     assert statistics.median(durations) < 0.05, statistics.median(durations)
     assert max(durations) < 0.5, max(durations)
@@ -361,3 +365,36 @@ async def _own_connections_only(conn):
         " WHERE datname = current_database() AND application_name LIKE 'fronta-%'"
     )
     return (await cur.fetchone())[0] == 0
+
+
+@task("keyed_scale", input=In, output=Out, attempt_timeout=30, max_concurrency_per_key=1)
+async def keyed_scale(ctx: Any, inp: In) -> Out:
+    return await workers._timed_sleep(ctx, inp)
+
+
+async def test_claims_stay_fast_behind_a_saturated_higher_priority_type(conn):
+    """A saturated type's whole backlog sits ahead in the index: skipping it must not recount the
+    running tasks for every rejected row (measured ~120 ms -> ~25 ms for 50k rows)."""
+    await store.publish_task_type(conn, workers.limited_task.spec)  # max_concurrency 2
+    await store.publish_task_type(conn, sleep_task.spec)
+    await bulk(conn, "limited", 2, state="running")
+    await bulk(conn, "limited", 30_000, priorities=0)
+    await conn.execute("UPDATE fronta.tasks SET priority = 10 WHERE type = 'limited'")
+    await bulk(conn, "sleep", 1_000, priorities=0)
+    await conn.execute("ANALYZE fronta.tasks")
+    durations = await timed_claims(conn, ["limited", "sleep"], 20)
+    assert statistics.median(durations) < 0.1, statistics.median(durations)
+    cur = await conn.execute(
+        "SELECT count(*) FROM fronta.tasks WHERE type = 'limited' AND state = 'running'"
+    )
+    assert (await cur.fetchone())[0] == 2  # the limit held: only sleep rows were claimed
+
+
+async def test_claims_stay_fast_with_thousands_of_saturated_keys(conn):
+    """Per-key saturation is one small hashed set per claim, however many keys are saturated."""
+    await store.publish_task_type(conn, keyed_scale.spec)
+    await bulk(conn, "keyed_scale", 2_000, state="running", keys=100_000)
+    await bulk(conn, "keyed_scale", 20_000, keys=100_000)
+    await conn.execute("ANALYZE fronta.tasks")
+    durations = await timed_claims(conn, ["keyed_scale"], 20)
+    assert statistics.median(durations) < 0.05, statistics.median(durations)

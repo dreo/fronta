@@ -7,8 +7,9 @@ import asyncio
 import psycopg
 import pytest
 
-from fronta import Settings, runtime
+from fronta import Settings, runtime, store
 from tests.conftest import FAST
+from tests.workers import In, sleep_task
 
 
 async def test_pool_is_reused_per_loop_and_replaced_after_reconfiguration(settings):
@@ -51,4 +52,25 @@ async def test_concurrent_first_opens_share_one_pool(settings):
     pools = await asyncio.gather(*(runtime.open_pool() for _ in range(5)))
     assert len({id(p) for p in pools}) == 1
     assert runtime._pools[asyncio.get_running_loop()][1] is pools[0]
+    await runtime.close_pool()
+
+
+async def test_sdk_pool_connections_are_autocommit_and_enqueue_stays_atomic(
+    settings, conn, monkeypatch
+):
+    runtime.configure(settings)
+    pool = await runtime.open_pool()
+    async with pool.connection() as c:
+        assert c.autocommit  # one statement, one round trip; transactions are explicit
+    await store.publish_task_type(conn, sleep_task.spec)
+
+    async def broken_event(*_args):
+        msg = "simulated notification failure"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(store, "_event", broken_event)
+    with pytest.raises(RuntimeError, match="notification failure"):
+        await sleep_task.enqueue(In())  # the pool path: row and notifications commit together
+    cur = await conn.execute("SELECT count(*) FROM fronta.tasks")
+    assert (await cur.fetchone())[0] == 0
     await runtime.close_pool()
