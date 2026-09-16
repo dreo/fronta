@@ -23,7 +23,9 @@ UPDATE fronta.tasks t SET
         OR t.cancel_requested_at IS NOT NULL OR (c.kind = 'fail' AND t.failures + 1 >= t.max_attempts)
         THEN now() END,
     token = NULL, lease_until = NULL
-FROM locked c WHERE t.id = c.id AND t.state = 'running' AND t.token = c.token
+-- The locked CTE already checked state and holds each row through this update. Repeating the
+-- state filter here can pick a running-state scan with quadratic joins when stats are stale.
+FROM locked c WHERE t.id = c.id AND t.token = c.token
     AND (c.kind <> 'cancel' OR t.cancel_requested_at IS NOT NULL)
 RETURNING t.id, t.type, t.state, t.attempt
 ), published AS ({published})

@@ -34,6 +34,7 @@ contracts; follow each release's database initialization instructions.
   using that attempt's execution token.
 - Completion, orphan-release and renewal batches lock tasks consistently to avoid deadlocks;
   expired attempts no longer consume healthy attempts' renewal budgets.
+- Completion batches keep indexed task lookups when database state statistics are stale.
 - Repeated worker cancellation waits for asyncio handler cleanup before releasing resources.
   Persistent sandbox process handles verify ownership before they can be signalled.
 - Subscription deletion no longer takes a global exclusive table lock. It waits only on matching

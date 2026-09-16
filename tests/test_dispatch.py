@@ -91,7 +91,9 @@ async def test_completion_locks_follow_renewal_id_order(conn, dsn, operation):
     )
     low, high = rows
     async with await psycopg.AsyncConnection.connect(dsn) as holder:
-        await holder.execute("SELECT 1 FROM fronta.tasks WHERE id = %s FOR UPDATE", (low.id,))
+        # Renewal creates a new row version before the completion's snapshot. The completion
+        # must follow that version after waiting; targeting the new ctid would silently miss it.
+        assert await store.heartbeat(holder, [(low.id, low.token)], 30) == {low.id: None}
         write = asyncio.create_task(
             store.complete(conn, [Completion(r.id, r.token, "succeed", "null") for r in rows[::-1]])
             if operation == "complete"
@@ -115,7 +117,7 @@ async def test_completion_locks_follow_renewal_id_order(conn, dsn, operation):
                 "SELECT 1 FROM fronta.tasks WHERE id = %s FOR UPDATE NOWAIT", (high.id,)
             )
         finally:
-            await holder.rollback()
+            await holder.commit()
             await asyncio.wait_for(write, 5)
     expected = State.SUCCEEDED if operation == "complete" else State.QUEUED
     for row in rows:
