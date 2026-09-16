@@ -1,0 +1,94 @@
+{
+  "grading_version": "durable-throughput-v2",
+  "source_sha256": "a6c68e292ae7ea944738fe89ba0a8739e7e95b034566a954bc764c551f454795",
+  "durability": {
+    "fsync": true,
+    "synchronous_commit": true,
+    "full_page_writes": true
+  },
+  "summary": {
+    "defaults": {
+      "runs": 3,
+      "median_tasks_per_s": 7243.54736651711,
+      "range_tasks_per_s": [
+        7080.07926037481,
+        7831.513804399494
+      ]
+    },
+    "single-type": {
+      "runs": 3,
+      "median_tasks_per_s": 32887.31736253283,
+      "range_tasks_per_s": [
+        29238.295141895847,
+        35705.8050542751
+      ]
+    },
+    "multi-type": {
+      "runs": 3,
+      "median_tasks_per_s": 31160.82054265527,
+      "range_tasks_per_s": [
+        29797.2342902689,
+        33498.409774618216
+      ]
+    },
+    "live": {
+      "runs": 3,
+      "median_tasks_per_s": 3050.688516759864,
+      "range_tasks_per_s": [
+        3009.8425235951495,
+        3387.44138626981
+      ]
+    },
+    "feed": {
+      "runs": 3,
+      "median_tasks_per_s": 3062.5502459287027,
+      "range_tasks_per_s": [
+        3040.756459923819,
+        3383.385636633866
+      ]
+    },
+    "payload": {
+      "runs": 3,
+      "median_tasks_per_s": 241.5531286443689,
+      "range_tasks_per_s": [
+        236.00108201792244,
+        247.96295589226838
+      ]
+    },
+    "feed-drain": {
+      "runs": 3,
+      "median_tasks_per_s": 23077.398088078546,
+      "range_tasks_per_s": [
+        21054.520268465483,
+        25205.473357375547
+      ]
+    }
+  },
+  "ratios": {
+    "multi_to_single": 0.9475026557853429,
+    "feed_to_live": 1.003888213792943
+  },
+  "worst_feed_p99_ms": 76.663,
+  "worst_payload_rss_bytes": 373899264,
+  "worst_payload_p99_ms": 35.117509999999996,
+  "payload_limits": {
+    "rss_bytes": 628094976.0,
+    "p99_ms": 113.93527999999999
+  },
+  "worst_feed_drain_fsync_per_task": 0.010683333333333333,
+  "worst_feed_drain_object_wait_fraction": 0.0,
+  "checks": {
+    "defaults": true,
+    "single-type": true,
+    "multi-type": true,
+    "live": false,
+    "feed-throughput": true,
+    "feed-lag": true,
+    "payload-rss": true,
+    "payload-p99": true,
+    "feed-drain-fsync": true,
+    "feed-drain-object-waits": true
+  },
+  "passed": false,
+  "source": "/tmp/fronta-release-20260916/release-throughput.json"
+}

@@ -24,5 +24,24 @@
       "change": "Strip trailing whitespace only",
       "release_sha256": "4905a9290e0c47a699a43e236cf0c58b624811ffba07f4cbcdf45f7de7d2e224"
     }
+  },
+  "release-throughput.json": {
+    "source_sha256": "a6c68e292ae7ea944738fe89ba0a8739e7e95b034566a954bc764c551f454795",
+    "sha256": "e59e844a46f2fbaafc884501a1716156dac60826612485df980a41d62c5ac70b"
+  },
+  "release-throughput-grade.json": {
+    "source_sha256": "a6c68e292ae7ea944738fe89ba0a8739e7e95b034566a954bc764c551f454795",
+    "sha256": "ebe8b1d426373b2296860a1c031f8205d335264c2f25d024083597201cc1f926"
+  },
+  "release-renewals.json": {
+    "source_sha256": "a6c68e292ae7ea944738fe89ba0a8739e7e95b034566a954bc764c551f454795",
+    "sha256": "759c8365ee138c029d412bc4ca0ad53fa1b38a8ae7a5a201be3aa4c7b8c60878"
+  },
+  "release-comparison.json": {
+    "sha256": "1715b1dfe13afa77c1f0a76db4ef55c06498340be2edfc272b1466249b4a65d2"
+  },
+  "release-physical.json": {
+    "source_sha256": "a6c68e292ae7ea944738fe89ba0a8739e7e95b034566a954bc764c551f454795",
+    "sha256": "2a6d7c26b3c9bfa31eec73e810ee63151bbdcf485ca7892b870c6079b8770783"
   }
 }

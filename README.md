@@ -226,11 +226,10 @@ commit; wake, cancel and feed hints use a separate connection.
 Upgrade steps and API/configuration details: [reference](docs/reference.md).
 For sustained traffic, start with the [PostgreSQL 18 configuration](docs/postgresql.md).
 
-Pre-release measurements reached **11.6k no-op tasks/s at Fronta defaults** and **5.4k/s with
-live SDK producers and a terminal feed**. A physical Linux run processed **32.4 million tasks
-over three hours**, recovered after an injected long transaction, and reached stable storage
-with retention enabled. These are workload-specific measurements; [results and limits](benchmarks/RESULTS.md)
-identify the tested source versions and distinguish normal operation from fault recovery.
+The final release processed **1.8 million tasks at roughly 3,000/s** in a ten-minute physical
+Linux diagnostic, recovered after an injected transaction hold, and drained with exact accounting.
+An earlier three-hour run established stable retained storage after recovery. [Results and limits](benchmarks/RESULTS.md)
+identify the tested source versions, throughput comparisons and limits of the shorter release check.
 
 ## Changing a task's contract
 
