@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections import Counter
+from dataclasses import replace
 from typing import Any
 
-from fronta import Settings, State, Worker, store, task
-from fronta.model import NewTask, Policy
+import psycopg
+import pytest
+from psycopg import sql
+
+from fronta import Settings, State, Worker, runtime, store, task
+from fronta.model import Completion, NewTask, Policy
 from tests import workers
 from tests.conftest import FAST, max_overlap, running_all, wait_until
 from tests.workers import In, Out, limited_task, sleep_task
@@ -156,11 +163,17 @@ async def test_shrinking_a_limit_admits_nothing_until_running_drops_below_it(con
     assert await _claim(conn) is None
     await store.publish_task_type(conn, _spec(limited_task, max_concurrency=1))
     assert await _claim(conn) is None
-    assert await store.succeed(conn, running[0].id, running[0].token, "1")
+    assert (
+        await store.complete(conn, [Completion(running[0].id, running[0].token, "succeed", "1")])
+    ).get(running[0].id)
     assert await _claim(conn) is None  # 2 still running > 1
-    assert await store.succeed(conn, running[1].id, running[1].token, "1")
+    assert (
+        await store.complete(conn, [Completion(running[1].id, running[1].token, "succeed", "1")])
+    ).get(running[1].id)
     assert await _claim(conn) is None  # 1 running == 1
-    assert await store.succeed(conn, running[2].id, running[2].token, "1")
+    assert (
+        await store.complete(conn, [Completion(running[2].id, running[2].token, "succeed", "1")])
+    ).get(running[2].id)
     assert await _claim(conn) is not None
     assert await _claim(conn) is None
 
@@ -208,4 +221,207 @@ def _policy_dict(policy):
 
 
 async def _claim(conn):
-    return await store.claim(conn, types=["limited"], worker="w", lease_s=30, deadline_s=1)
+    return (
+        await store.claim(conn, types=["limited"], worker="w", lease_s=30, deadline_s=1, count=1)
+        or [None]
+    )[0]
+
+
+# Folded batch regressions
+
+
+async def batch_claims(conn, count=16, types=None):
+    return await store.claim(
+        conn, types=types or ["sleep"], worker="batch", lease_s=30, deadline_s=1, count=count
+    )
+
+
+async def batch_seed(conn, definition=sleep_task, count=16):
+    await store.publish_task_type(conn, definition.spec)
+    return [
+        await store.enqueue(conn, NewTask(definition.name, "{}", Policy(max_attempts=2)))
+        for _ in range(count)
+    ]
+
+
+async def batch_all_done(conn, ids):
+    rows = await (
+        await conn.execute(
+            "SELECT count(*) FROM fronta.tasks WHERE id=ANY(%s) AND state='succeeded'", (ids,)
+        )
+    ).fetchone()
+    return rows[0] == len(ids)
+
+
+async def test_concurrent_batches_enforce_type_limit(conn, dsn):
+    await batch_seed(conn, limited_task, 64)
+    pool = runtime.make_pool(Settings(dsn=dsn, pool_size=16))
+    await runtime.open_ready(pool, 5)
+
+    async def claim():
+        async with pool.connection() as c:
+            return await batch_claims(c, types=["limited"])
+
+    try:
+        batches = await asyncio.gather(*(claim() for _ in range(16)))
+    finally:
+        await pool.close()
+    assert sum(map(len, batches)) == 2
+    assert len({r.id for b in batches for r in b}) == 2
+
+
+async def test_batch_per_key_limits_include_its_uncommitted_reservations(conn):
+    @task("sleep", input=In, max_concurrency_per_key=1)
+    async def keyed(ctx, inp):
+        del ctx
+        return inp.n
+
+    await store.publish_task_type(conn, keyed.spec)
+    for key in ["hot"] * 20 + ["cold"] * 3 + [None] * 4:
+        await store.enqueue(conn, NewTask("sleep", "{}", Policy(), concurrency_key=key))
+    batch = await batch_claims(conn)
+    assert Counter(r.concurrency_key for r in batch) == {"hot": 1, "cold": 1, None: 4}
+    assert await batch_claims(conn) == []
+
+
+async def test_busy_type_and_rejected_key_do_not_skip_another_types_candidates(conn, dsn):
+    for name in ("a", "b"):
+
+        @task(name, input=In, max_concurrency_per_key=1)
+        async def keyed(ctx, inp):
+            del ctx
+            return inp.n
+
+        await store.publish_task_type(conn, keyed.spec)
+    ids = [
+        await store.enqueue(conn, NewTask(typ, "{}", Policy(), concurrency_key=key))
+        for typ, key in [("a", "hot"), ("a", "hot"), ("b", "hot"), ("b", "cold")]
+    ]
+    async with await psycopg.AsyncConnection.connect(dsn) as holder:
+        assert [r.id for r in await batch_claims(holder, count=1, types=["a"])] == [ids[0]]
+        assert [r.id for r in await batch_claims(conn, types=["a", "b"])] == ids[2:]
+    assert await batch_claims(conn, types=["a", "b"]) == []
+
+
+async def test_batched_fleet_limits_and_slot_caps(conn, dsn):
+    workers.INTERVALS.clear()
+    await store.publish_task_type(conn, limited_task.spec)
+    ids = [
+        await store.enqueue(conn, NewTask("limited", '{"sleep_s":0.04}', limited_task.policy))
+        for _ in range(80)
+    ]
+    settings = Settings(dsn=dsn, **FAST)
+    fleet = [Worker([limited_task], settings=settings) for _ in range(8)]
+    async with running_all(fleet):
+        await wait_until(lambda: batch_all_done(conn, ids), timeout=30)
+    assert len(workers.INTERVALS) == 80
+    assert max_overlap(workers.INTERVALS) == 2
+
+
+async def test_publication_waits_for_unlimited_admissions_then_recounts(conn, dsn):
+    await batch_seed(conn, count=5)
+    async with (
+        await psycopg.AsyncConnection.connect(dsn, autocommit=True) as admission,
+        await psycopg.AsyncConnection.connect(dsn, autocommit=True) as publisher,
+    ):
+        async with admission.transaction():
+            assert len(await batch_claims(admission, count=2)) == 2
+            limited = replace(sleep_task.spec, policy=Policy(max_concurrency=1))
+            publishing = asyncio.create_task(store.publish_task_type(publisher, limited))
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(publishing), 0.05)
+        await asyncio.wait_for(publishing, 5)
+    assert (
+        await batch_claims(conn) == []
+    )  # the newly enabled limit includes both earlier admissions
+
+
+async def test_raw_policy_update_waits_for_unlimited_admission(conn, dsn):
+    await batch_seed(conn, count=5)
+    async with (
+        await psycopg.AsyncConnection.connect(dsn) as admission,
+        await psycopg.AsyncConnection.connect(dsn, autocommit=True) as publisher,
+    ):
+        assert len(await batch_claims(admission, count=2)) == 2
+        update = asyncio.create_task(
+            publisher.execute("UPDATE fronta.task_types SET max_concurrency=1 WHERE name='sleep'")
+        )
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(update), 0.05)
+        await admission.commit()
+        await asyncio.wait_for(update, 2)
+    assert await batch_claims(conn) == []
+
+
+async def test_pool_pins_read_committed_over_a_repeatable_read_database(conn, dsn):
+
+    await batch_seed(conn, limited_task, 64)
+    name = (await (await conn.execute("SELECT current_database()")).fetchone())[0]
+    statement = sql.SQL("ALTER DATABASE {} SET default_transaction_isolation = {}")
+    await conn.execute(statement.format(sql.Identifier(name), sql.Literal("repeatable read")))
+    pool = runtime.make_pool(Settings(dsn=dsn, pool_size=20))
+
+    async def claim():
+        async with pool.connection() as c:
+            level = await (await c.execute("SHOW transaction_isolation")).fetchone()
+            assert level[0] == "read committed"
+            return await batch_claims(c, types=["limited"])
+
+    try:
+        await runtime.open_ready(pool, 5)
+        batches = await asyncio.gather(*(claim() for _ in range(20)))
+        assert sum(map(len, batches)) == 2
+    finally:
+        await pool.close()
+        await conn.execute(statement.format(sql.Identifier(name), sql.Literal("read committed")))
+
+
+async def test_twenty_multi_type_workers_hold_type_and_key_limits(conn, settings):
+    observed = []
+    active = Counter()
+    definitions = []
+    for name in ("batch_a", "batch_b", "batch_c"):
+
+        @task(name, input=In, max_concurrency=3, max_concurrency_per_key=1)
+        async def handler(ctx, inp):
+            typ = ctx._attempt.row.type
+            active[typ] += 1
+            active[typ, inp.key] += 1
+            assert active[typ] <= 3
+            assert active[typ, inp.key] <= 1
+            try:
+                await asyncio.sleep(0.015)
+                observed.append(ctx.task_id)
+            finally:
+                active[typ] -= 1
+                active[typ, inp.key] -= 1
+
+        definitions.append(handler)
+        await store.publish_task_type(conn, handler.spec)
+    ids = [
+        await store.enqueue(
+            conn,
+            NewTask(
+                definitions[i % 3].name,
+                f'{{"key":"k{i % 5}"}}',
+                Policy(),
+                concurrency_key=f"k{i % 5}",
+            ),
+        )
+        for i in range(150)
+    ]
+    fleet = [
+        Worker(
+            definitions, settings=settings.model_copy(update={"concurrency": 16, "pool_size": 2})
+        )
+        for _ in range(20)
+    ]
+    async with running_all(fleet):
+        await wait_until(lambda: batch_all_done(conn, ids), timeout=30)
+    assert sorted(observed) == ids
+    assert not any(active.values())
+    assert (
+        await (
+            await conn.execute("SELECT max(attempt), max(failures) FROM fronta.tasks")
+        ).fetchone()
+    ) == (1, 0)

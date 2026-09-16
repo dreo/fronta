@@ -79,7 +79,10 @@ def test_dsn() -> Iterator[str]:
 def dsn(test_dsn: str) -> str:
     """The test database with empty tables."""
     with psycopg.connect(test_dsn, autocommit=True) as conn:
-        conn.execute("TRUNCATE fronta.tasks, fronta.task_types RESTART IDENTITY")
+        conn.execute(
+            "TRUNCATE fronta.tasks, fronta.task_types, fronta.events, "
+            "fronta.subscriptions RESTART IDENTITY"
+        )
     return test_dsn
 
 
@@ -99,6 +102,7 @@ async def _no_sdk_pool_left_behind() -> AsyncIterator[None]:
     """A test that opens the SDK pool must close it (use the `sdk` fixture): leaked pools keep
     idle database connections alive for as long as the interpreter lives."""
     yield
+    await runtime.close_hints(immediate=True)
     loop = asyncio.get_running_loop()
     entry = runtime._pools.get(loop)
     if entry is not None and not entry[1].closed:

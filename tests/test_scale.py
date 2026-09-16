@@ -65,7 +65,10 @@ async def timed_claims(conn, types, n):
     durations = []
     for _ in range(n):
         started = time.perf_counter()
-        row = await store.claim(conn, types=types, worker="w", lease_s=30, deadline_s=5)
+        row = (
+            await store.claim(conn, types=types, worker="w", lease_s=30, deadline_s=5, count=1)
+            or [None]
+        )[0]
         durations.append(time.perf_counter() - started)
         assert row is not None
     return durations
@@ -86,11 +89,30 @@ async def test_claims_stay_fast_on_a_sixty_thousand_row_backlog(conn):
     await bulk(conn, "limited", 20_000)
     await conn.execute("ANALYZE fronta.tasks")
     cur = await conn.execute(
-        sql.SQL("EXPLAIN ") + store._CANDIDATE, {"types": ["sleep", "limited"], "skip": []}
+        sql.SQL("EXPLAIN (FORMAT JSON) ") + store._CANDIDATE,
+        {
+            "types": ["sleep", "limited"],
+            "skip": [],
+            "skip_keys": [],
+            "skip_types": [],
+            "skip_key_types": [],
+            "count": 1,
+        },
     )
-    plan = "\n".join(row[0] for row in await cur.fetchall())
-    assert "Index Scan using tasks_queue_idx on tasks t" in plan  # walked in claim order ...
-    assert "Sort Key: t.priority" not in plan  # ... never sorted
+    plan = (await cur.fetchone())[0][0]["Plan"]
+
+    def nodes(node):
+        yield node
+        for child in node.get("Plans", []):
+            yield from nodes(child)
+
+    assert any(n.get("Index Name") == "tasks_type_queue_idx" for n in nodes(plan))
+    # PostgreSQL may expose the inner alias in the global merge's sort key.
+    # It must sort only bounded candidates, never the whole per-type backlog.
+    sorts = [n for n in nodes(plan) if any("priority" in k for k in n.get("Sort Key", []))]
+    assert sorts
+    # The mutually exclusive head and per-type branches contribute estimates of 1 and 2.
+    assert all(n["Plan Rows"] <= 3 for n in sorts), plan
     durations = await timed_claims(conn, ["sleep", "limited"], 50)
     assert statistics.median(durations) < 0.05, statistics.median(durations)
     assert max(durations) < 0.5, max(durations)
@@ -111,6 +133,27 @@ async def test_claims_stay_fast_behind_thirty_thousand_higher_priority_tasks_due
         "SELECT count(*) FROM fronta.tasks WHERE state = 'running' AND priority = 10"
     )
     assert (await cur.fetchone())[0] == 0  # only due work was claimed
+
+
+async def test_single_type_claims_skip_a_million_unrelated_higher_priority_rows(conn):
+    """Rare accepted types must stay fast after repeated claims and varying planner estimates.
+
+    A generic queue scan, or a custom plan sorting all matching rows, was measured at roughly
+    200 ms per claim here. The type-specific ordered path must avoid the unrelated backlog.
+    """
+    await store.publish_task_type(conn, sleep_task.spec)
+    await store.publish_task_type(conn, workers.limited_task.spec)
+    await bulk(conn, "limited", 1_000_000, priorities=0)
+    await bulk(conn, "sleep", 2_000, priorities=0)
+    await conn.execute("UPDATE fronta.tasks SET priority = -1 WHERE type = 'sleep'")
+    await conn.execute("VACUUM ANALYZE fronta.tasks")
+    durations = await timed_claims(conn, ["sleep"], 50)
+    assert statistics.median(durations) < 0.05, statistics.median(durations)
+    assert max(durations) < 0.5, max(durations)
+    cur = await conn.execute(
+        "SELECT type, count(*) FROM fronta.tasks WHERE state = 'running' GROUP BY type"
+    )
+    assert await cur.fetchall() == [("sleep", 50)]
 
 
 async def test_a_backlog_drains_in_priority_order(conn, dsn):
@@ -242,7 +285,7 @@ async def test_two_thousand_quick_tasks_through_a_fleet_exactly_once_without_lea
         t.get_name()
         for t in asyncio.all_tasks()
         if t.get_name().startswith(
-            ("attempt-", "heartbeat-", "run-", "tick", "listener", "reaper", "purger")
+            ("attempt-", "renewals", "run-", "tick", "listener", "reaper", "purger")
         )
     ]
     assert live == []

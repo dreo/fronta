@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     lease_s: float = Field(30.0, gt=0, allow_inf_nan=False)
     heartbeat_s: float = Field(10.0, gt=0, allow_inf_nan=False)
     reaper_interval_s: float = Field(15.0, gt=0, allow_inf_nan=False)
-    poll_interval_s: float = Field(5.0, gt=0, allow_inf_nan=False)
+    poll_interval_s: float = Field(1.0, gt=0, allow_inf_nan=False)
     grace_s: float = Field(30.0, ge=0, allow_inf_nan=False)
     kill_timeout_s: float = Field(5.0, gt=0, allow_inf_nan=False)
 
@@ -78,15 +78,6 @@ class Settings(BaseSettings):
         can be retried at least once before the lease expires; never longer than a statement.
         """
         return min(self.statement_timeout_s, max(0.05, (self.lease_s - self.heartbeat_s) / 2))
-
-    @property
-    def claim_lock_timeout_s(self) -> float:
-        """How long a claim may wait for a `task_types` lock: half a lease.
-
-        A returned claim then always carries a usable lease, and the claim loop stays responsive
-        to shutdown.
-        """
-        return self.lease_s / 2
 
     def allowed_hosts(self) -> list[str]:
         return _split(self.server_allowed_hosts)

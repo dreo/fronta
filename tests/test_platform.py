@@ -5,11 +5,34 @@ from __future__ import annotations
 import os
 import socket
 import sys
+from unittest.mock import Mock
 
 import pytest
 
 from fronta import SandboxError, Worker, sandbox
 from tests.workers import echo_proc
+
+
+@pytest.mark.parametrize("matches", [False, True])
+def test_sandbox_identity_is_checked_after_opening_pidfd(monkeypatch, matches):
+    handle = Mock()
+    acquired = []
+
+    def opened(pid):
+        acquired.append(pid)
+        return handle
+
+    def marker_checked(pid, marker):
+        assert acquired == [pid]  # the numeric PID must be pinned before inspecting /proc
+        assert marker == b"FRONTA_SANDBOX_ID=ours\0"
+        return matches
+
+    monkeypatch.setattr(sandbox.Pidfd, "open", opened)
+    monkeypatch.setattr(sandbox, "_environ_has", marker_checked)
+    result = sandbox._open_marked(123, b"FRONTA_SANDBOX_ID=ours\0")
+    assert result is (handle if matches else None)
+    assert handle.close.call_count == (0 if matches else 1)
+    handle.send_signal.assert_not_called()
 
 
 def test_worker_ids_are_unique_without_proc(monkeypatch: pytest.MonkeyPatch) -> None:

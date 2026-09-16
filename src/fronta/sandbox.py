@@ -63,7 +63,7 @@ def require_linux() -> None:
 def worker_id() -> str:
     """`host:pid:starttime-or-nonce` — unique even on hosts without Linux `/proc`."""
     pid = os.getpid()
-    identity = _starttime(pid) or f"nonce-{uuid4().hex}"
+    identity = f"{_starttime(pid) or 'nonce'}-{uuid4().hex}"
     return f"{socket.gethostname()}:{pid}:{identity}"
 
 
@@ -89,7 +89,7 @@ def is_worker_alive(worker: str) -> bool | None:
         return None
     starttime = _starttime(pid)
     if starttime is not None:
-        return starttime == parts[2]
+        return starttime == parts[2].split("-", 1)[0]
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -208,17 +208,27 @@ def _proc_environs() -> list[tuple[int, bytes]]:
     return found
 
 
-def _kill_marked(pid: int, marker: bytes, sig: signal.Signals) -> bool:
-    """Signal `pid` through a pidfd after re-checking the marker under that identity."""
+def _open_marked(pid: int, marker: bytes) -> Pidfd | None:
+    """Pin a process identity, then verify it still belongs to this sandbox."""
     try:
         pidfd = Pidfd.open(pid)
     except OSError:
-        return False
+        return None
+    if pidfd is None:
+        return None
+    if not _environ_has(pid, marker):
+        pidfd.close()
+        return None
+    return pidfd
+
+
+def _kill_marked(pid: int, marker: bytes, sig: signal.Signals) -> bool:
+    """Signal only a process whose identity and sandbox marker were checked together."""
+    pidfd = _open_marked(pid, marker)
     if pidfd is None:
         return False
     try:
-        # The pidfd pins the identity: a pid recycled after this point cannot match anymore.
-        return _environ_has(pid, marker) and pidfd.send_signal(sig)
+        return pidfd.send_signal(sig)
     except OSError:
         return False
     finally:
@@ -377,6 +387,7 @@ class SandboxProcess:
         """
         require_linux()
         sandbox_id = env[SANDBOX_ENV]
+        marker = f"{SANDBOX_ENV}={sandbox_id}".encode() + b"\0"
         read_fd, write_fd = os.pipe()
         try:
             cmd = build_argv(
@@ -404,7 +415,7 @@ class SandboxProcess:
         outer_pidfd: Pidfd | None = None
         init_pidfd: Pidfd | None = None
         try:
-            outer_pidfd = Pidfd.open(proc.pid)
+            outer_pidfd = _open_marked(proc.pid, marker)
             loop = asyncio.get_running_loop()
             status = asyncio.StreamReader()
             await loop.connect_read_pipe(
@@ -416,7 +427,7 @@ class SandboxProcess:
                 line = b""
             if line:
                 init_pid = int(json.loads(line)["child-pid"])
-                init_pidfd = Pidfd.open(init_pid)
+                init_pidfd = _open_marked(init_pid, marker)
         except BaseException:
             # Cancelled or failed while the sandbox was starting: nothing may outlive this call.
             await _abort(proc, outer_pidfd, kill_timeout_s, sandbox_id)

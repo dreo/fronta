@@ -14,11 +14,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
+from psycopg.pq import TransactionStatus
 from pydantic import BaseModel, ValidationError
 
 from fronta import codec, runtime, store
-from fronta.errors import InvalidInput, PayloadTooLarge
-from fronta.model import Backoff, Executor, NewTask, Policy, Sandbox, TaskTypeSpec
+from fronta.errors import InvalidInput, PayloadTooLarge, TaskNotFound
+from fronta.model import Backoff, Executor, NewTask, Policy, Sandbox, TaskRow, TaskTypeSpec
 
 if TYPE_CHECKING:
     import asyncio
@@ -35,6 +36,7 @@ class Context[StateT](Protocol):
     attempt: int
     state: StateT
     log: logging.LoggerAdapter[logging.Logger]
+    metadata: JSON
     cancelled: asyncio.Event
 
     async def progress(self, value: JSON) -> None:
@@ -49,6 +51,7 @@ class Context[StateT](Protocol):
         run_at: datetime | None = None,
         key: str | None = None,
         concurrency_key: str | None = None,
+        metadata: JSON = None,
     ) -> int:
         """Enqueue another task, immediately and independently of this task's outcome."""
 
@@ -148,14 +151,9 @@ class TaskDefinition[InputT: BaseModel, OutputT]:
         run_at: datetime | None = None,
         key: str | None = None,
         concurrency_key: str | None = None,
+        metadata: JSON = None,
     ) -> int:
-        """Enqueue and return the task id (or the id of the active task with the same key).
-
-        With a non-autocommit `conn` the insert joins the caller's transaction (never committed by
-        Fronta). An autocommit connection gets one transaction for the insert and notifications.
-        Without `conn` the process-global pool is used and the insert is committed here; only that
-        path needs `FRONTA_DSN`.
-        """
+        """Enqueue with SDK settings; a supplied transaction keeps its commit/rollback boundary."""
         return await self.enqueue_with(
             runtime.get_settings(),
             input,
@@ -164,6 +162,7 @@ class TaskDefinition[InputT: BaseModel, OutputT]:
             run_at=run_at,
             key=key,
             concurrency_key=concurrency_key,
+            metadata=metadata,
         )
 
     async def enqueue_with(  # noqa: PLR0913  # the public signature plus the settings
@@ -176,6 +175,7 @@ class TaskDefinition[InputT: BaseModel, OutputT]:
         run_at: datetime | None = None,
         key: str | None = None,
         concurrency_key: str | None = None,
+        metadata: JSON = None,
     ) -> int:
         """`enqueue()` with explicit settings for the caps and the dedupe deadline.
 
@@ -190,16 +190,23 @@ class TaskDefinition[InputT: BaseModel, OutputT]:
             run_at=run_at,
             key=key,
             concurrency_key=concurrency_key,
+            metadata_json=encode_metadata(metadata, settings.progress_cap),
         )
         deadline = settings.statement_timeout_s
         if conn is not None:
-            if conn.autocommit:
-                async with conn.transaction():
-                    return await store.enqueue(conn, new_task, deadline_s=deadline)
-            return await store.enqueue(conn, new_task, deadline_s=deadline)
+            task_id = await store.enqueue(conn, new_task, deadline_s=deadline)
+            if conn.autocommit and conn.info.transaction_status == TransactionStatus.IDLE:
+                hints = runtime.hints(settings, conn=conn)
+                hints.wake([self.name])
+                hints.feed(["queued"])
+            return task_id
         pool = await runtime.open_pool()
-        async with pool.connection() as own_conn, own_conn.transaction():
-            return await store.enqueue(own_conn, new_task, deadline_s=deadline)
+        async with pool.connection() as own_conn:
+            task_id = await store.enqueue(own_conn, new_task, deadline_s=deadline)
+        hints = runtime.hints(settings)
+        hints.wake([self.name])
+        hints.feed(["queued"])
+        return task_id
 
 
 class ProcessTaskDefinition[InputT: BaseModel](TaskDefinition[InputT, dict[str, Any]]):
@@ -293,3 +300,59 @@ def process_task[InputT: BaseModel](  # noqa: PLR0913  # public signature fixed 
     return ProcessTaskDefinition(
         name, argv=tuple(argv), input_model=input, policy=policy, sandbox=sandbox or Sandbox()
     )
+
+
+async def get_task(task_id: int, *, conn: store.Conn | None = None) -> TaskRow:
+    """Return a task's latest durable row; raise :class:`TaskNotFound` when it is absent."""
+    if conn is None:
+        pool = await runtime.open_pool()
+        async with pool.connection() as own_conn:
+            row = await store.get_task(own_conn, task_id)
+    else:
+        row = await store.get_task(conn, task_id)
+    if row is None:
+        msg = f"no task {task_id}"
+        raise TaskNotFound(msg)
+    return row
+
+
+def encode_metadata(value: JSON, cap: int) -> str | None:
+    if value is None:
+        return None
+    try:
+        return codec.encode_capped(value, cap, "metadata")
+    except codec.OverCap as exc:
+        raise PayloadTooLarge(str(exc)) from exc
+    except (codec.Unstorable, TypeError) as exc:
+        raise InvalidInput(str(exc)) from exc
+
+
+async def _pause(task_type: str, paused: bool) -> None:
+    pool = await runtime.open_pool()
+    async with pool.connection() as conn:
+        await store.set_paused(conn, task_type, paused)
+    if not paused:
+        runtime.hints().wake([task_type])
+
+
+async def pause(task_type: str) -> None:
+    """Stop new admissions of a type without interrupting its running tasks."""
+    await _pause(task_type, True)
+
+
+async def resume(task_type: str) -> None:
+    await _pause(task_type, False)
+
+
+async def requeue(task_id: int) -> None:
+    pool = await runtime.open_pool()
+    async with pool.connection() as conn:
+        task_type = await store.requeue(conn, task_id)
+    runtime.hints().wake([task_type])
+    runtime.hints().feed(["queued"])
+
+
+async def stats() -> dict[str, Any]:
+    pool = await runtime.open_pool()
+    async with pool.connection() as conn:
+        return await store.stats(conn)

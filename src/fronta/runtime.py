@@ -5,8 +5,8 @@ bound to the event loop that opened them (psycopg pools own tasks on that loop),
 kept per running loop and a pool whose loop is gone is discarded.
 
 Every pool Fronta opens hands out autocommit connections: a single statement is one round trip,
-and every operation that needs atomicity opens an explicit transaction block. That is the contract
-of the pool `open_pool()` returns as well.
+and multi-statement operations open explicit transaction blocks. Claims/outcomes use a single
+statement. Coalesced hints use a separate lazy connection per event loop and database.
 """
 
 from __future__ import annotations
@@ -14,12 +14,17 @@ from __future__ import annotations
 import asyncio
 import math
 import weakref
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg_pool import AsyncConnectionPool
 
 from fronta.config import Settings
 from fronta.errors import ConfigurationError
+from fronta.hints import Hints
+
+if TYPE_CHECKING:
+    from fronta.store import Conn
 
 _settings: Settings | None = None
 _pools: weakref.WeakKeyDictionary[
@@ -28,6 +33,54 @@ _pools: weakref.WeakKeyDictionary[
 _locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
     weakref.WeakKeyDictionary()
 )
+
+
+_hints: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[tuple[str, ...], Hints]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def connection_kwargs(
+    settings: Settings,
+    application_name: str,
+    statement_timeout_s: float | None = None,
+) -> dict[str, Any]:
+    timeout = settings.statement_timeout_s if statement_timeout_s is None else statement_timeout_s
+    return {
+        "autocommit": True,
+        "connect_timeout": max(1, math.ceil(settings.connect_timeout_s)),
+        "options": (
+            f"-c statement_timeout={max(1, math.ceil(timeout * 1000))}"
+            " -c default_transaction_isolation=read\\ committed"
+        ),
+        "application_name": application_name,
+    }
+
+
+def hints(settings: Settings | None = None, *, conn: Conn | None = None) -> Hints:
+    current = settings or get_settings()
+    target = (
+        make_conninfo(conn.info.dsn, password=conn.info.password)
+        if conn is not None
+        else dsn_of(current)
+    )
+    params = conninfo_to_dict(target)
+    params["port"] = params.get("port") or "5432"
+    # libpq adds hostaddr when resolving a numeric host; it is not a second target.
+    if params.get("hostaddr") == params.get("host"):
+        params.pop("hostaddr", None)
+    key = tuple(
+        str(params.get(k) or "") for k in ("host", "hostaddr", "port", "dbname", "user", "password")
+    )
+    entries = _hints.setdefault(asyncio.get_running_loop(), {})
+    if key not in entries:
+        entries[key] = Hints(target, connection_kwargs(current, "fronta-hints", 5))
+    return entries[key]
+
+
+async def close_hints(*, immediate: bool = False) -> None:
+    entries = _hints.pop(asyncio.get_running_loop(), {})
+    await asyncio.gather(*(h.close(immediate=immediate) for h in entries.values()))
 
 
 def configure(settings: Settings) -> None:
@@ -64,20 +117,13 @@ def make_pool(
     worker's connections from a server's or an application's. `statement_timeout_s` overrides the
     configured statement timeout (the worker's lease-renewal pool uses its renewal budget).
     """
-    timeout_s = settings.statement_timeout_s if statement_timeout_s is None else statement_timeout_s
-    statement_timeout_ms = max(1, math.ceil(timeout_s * 1000))
     return AsyncConnectionPool(
         dsn_of(settings),
         min_size=1,
         max_size=max_size or settings.pool_size,
         open=False,
         timeout=settings.connect_timeout_s,
-        kwargs={
-            "autocommit": True,
-            "connect_timeout": max(1, math.ceil(settings.connect_timeout_s)),
-            "options": f"-c statement_timeout={statement_timeout_ms}",
-            "application_name": application_name,
-        },
+        kwargs=connection_kwargs(settings, application_name, statement_timeout_s),
     )
 
 
@@ -119,6 +165,7 @@ async def open_pool(settings: Settings | None = None) -> AsyncConnectionPool[Any
 
 async def close_pool() -> None:
     """Close the pool of the current event loop, if any."""
+    await close_hints()
     entry = _pools.pop(asyncio.get_running_loop(), None)
     if entry is not None:
         await entry[1].close()

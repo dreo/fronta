@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from importlib import resources
 from typing import TYPE_CHECKING
 
+import psycopg
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -15,10 +17,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 
+from fronta import runtime, store
 from fronta.errors import (
     ConfigurationError,
     InvalidInput,
     NotCancellable,
+    NotRequeueable,
     PayloadTooLarge,
     TaskNotFound,
     UnknownTaskType,
@@ -68,6 +72,7 @@ _STATUS_BY_ERROR: dict[type[Exception], int] = {
     UnknownTaskType: 404,
     TaskNotFound: 404,
     NotCancellable: 409,
+    NotRequeueable: 409,
     PayloadTooLarge: 413,
     InvalidInput: 422,
 }
@@ -195,12 +200,14 @@ def create_app(settings: Settings) -> FastAPI:
     # MCP clients do not follow), so it is the root fall-through behind the bearer gate.
     mcp_app = mcp.streamable_http_app(
         streamable_http_path="/mcp",
-        max_request_body_size=settings.payload_cap + BODY_LIMIT_MARGIN,
+        max_request_body_size=settings.payload_cap + settings.progress_cap + BODY_LIMIT_MARGIN,
         transport_security=transport_security(settings),
         host=settings.server_host,
     )
     app.mount("/", BearerGate(mcp_app, settings.server_token), name="mcp")
-    app.add_middleware(BodyLimit, limit=settings.payload_cap + BODY_LIMIT_MARGIN)
+    app.add_middleware(
+        BodyLimit, limit=settings.payload_cap + settings.progress_cap + BODY_LIMIT_MARGIN
+    )
     return app
 
 
@@ -228,8 +235,21 @@ async def _request_validation(_: Request, exc: Exception) -> Response:
 
 def serve(settings: Settings) -> None:
     """Run the server with uvicorn until SIGTERM/SIGINT."""
+    app = create_app(settings)
+
+    async def preflight() -> None:
+        async with (
+            asyncio.timeout(settings.connect_timeout_s),
+            await psycopg.AsyncConnection.connect(
+                runtime.dsn_of(settings),
+                **runtime.connection_kwargs(settings, "fronta-server-preflight"),
+            ) as conn,
+        ):
+            await store.check_schema(conn)
+
+    asyncio.run(preflight())  # surface actionable CLI errors before uvicorn owns startup
     uvicorn.run(
-        create_app(settings),
+        app,
         host=settings.server_host,
         port=settings.server_port,
         log_config=None,

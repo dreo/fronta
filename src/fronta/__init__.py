@@ -3,7 +3,18 @@
 from importlib.metadata import version
 
 from fronta.config import Settings
-from fronta.definitions import Context, ProcessTaskDefinition, TaskDefinition, process_task, task
+from fronta.definitions import (
+    Context,
+    ProcessTaskDefinition,
+    TaskDefinition,
+    get_task,
+    pause,
+    process_task,
+    requeue,
+    resume,
+    stats,
+    task,
+)
 from fronta.errors import (
     ConfigurationError,
     FrontaError,
@@ -11,6 +22,7 @@ from fronta.errors import (
     InvalidInput,
     NonRetryableError,
     NotCancellable,
+    NotRequeueable,
     PayloadTooLarge,
     ProgressTooLarge,
     ResultSerializationError,
@@ -18,9 +30,10 @@ from fronta.errors import (
     TaskNotFound,
     UnknownTaskType,
 )
-from fronta.events import get_task, subscribe_events
+from fronta.feed import subscribe, unsubscribe
 from fronta.model import (
     Backoff,
+    Executor,
     Policy,
     Sandbox,
     State,
@@ -38,11 +51,13 @@ __all__ = [
     "Backoff",
     "ConfigurationError",
     "Context",
+    "Executor",
     "FrontaError",
     "InputValidationError",
     "InvalidInput",
     "NonRetryableError",
     "NotCancellable",
+    "NotRequeueable",
     "PayloadTooLarge",
     "Policy",
     "ProcessTaskDefinition",
@@ -65,7 +80,12 @@ __all__ = [
     "configure",
     "get_task",
     "open_pool",
+    "pause",
     "process_task",
-    "subscribe_events",
+    "requeue",
+    "resume",
+    "stats",
+    "subscribe",
     "task",
+    "unsubscribe",
 ]

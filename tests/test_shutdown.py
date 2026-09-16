@@ -7,16 +7,17 @@ import signal
 import sys
 import threading
 import time
+from collections import Counter
 from typing import Any
 
 import psycopg
 import pytest
 
-from fronta import Sandbox, State, Worker, process_task, sandbox, store, task
+from fronta import Sandbox, Settings, State, Worker, process_task, sandbox, store, task
 from fronta import worker as worker_module
-from fronta.model import NewTask
+from fronta.model import NewTask, Policy
 from fronta.worker import EXIT_FATAL
-from tests.conftest import leftover_sandboxes, wait_until
+from tests.conftest import FAST, leftover_sandboxes, wait_until
 from tests.workers import In, blocker_task, long_proc, sleep_task, stubborn_task
 
 requires_linux = pytest.mark.skipif(
@@ -147,7 +148,7 @@ async def test_a_claim_that_lands_after_the_shutdown_signal_is_released_not_star
 
     async def claim_then_stop(*args, **kwargs):
         row = await original(*args, **kwargs)
-        if row is not None:
+        if row:
             holder["worker"].request_shutdown()  # the signal lands while the claim is in flight
         return row
 
@@ -170,7 +171,7 @@ async def test_graceful_shutdown_waits_for_an_unresolved_final_transition(
     conn, settings, monkeypatch
 ):
     """The worker does not exit while a fenced transition still lacks a definitive answer."""
-    original = store.succeed
+    original = store.complete
     gate = {"open": False, "calls": 0}
 
     async def gated(*args, **kwargs):
@@ -180,7 +181,7 @@ async def test_graceful_shutdown_waits_for_an_unresolved_final_transition(
             raise psycopg.OperationalError(msg)
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(store, "succeed", gated)
+    monkeypatch.setattr(store, "complete", gated)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 0.1)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 0.1)
     worker = Worker([sleep_task], settings=settings)
@@ -207,7 +208,7 @@ async def test_a_second_signal_abandons_an_unresolved_transition(
         msg = "simulated outage"
         raise psycopg.OperationalError(msg)
 
-    monkeypatch.setattr(store, "succeed", down)
+    monkeypatch.setattr(store, "complete", down)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 0.1)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 0.1)
     worker = Worker([sleep_task], settings=settings)
@@ -250,7 +251,10 @@ async def test_a_failing_scavenger_does_not_stop_the_reaper(
     monkeypatch.setattr(sandbox, "scavenge_orphans", broken)
     await store.publish_task_type(conn, sleep_task.spec)
     task_id = await store.enqueue(conn, NewTask("sleep", "{}", sleep_task.policy))
-    stale = await store.claim(conn, types=["sleep"], worker="ghost", lease_s=0.1, deadline_s=1)
+    stale = (
+        await store.claim(conn, types=["sleep"], worker="ghost", lease_s=0.1, deadline_s=1, count=1)
+        or [None]
+    )[0]
     assert stale is not None
     with caplog.at_level("WARNING", logger="fronta.worker"):
         async with run_worker(Worker([long_proc, sleep_task], settings=settings)):
@@ -282,7 +286,7 @@ async def test_a_second_signal_during_phase_two_settles_every_controller_before_
         msg = "simulated outage"
         raise psycopg.OperationalError(msg)
 
-    monkeypatch.setattr(store, "release", down)
+    monkeypatch.setattr(store, "complete", down)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 0.1)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 0.1)
     worker = Worker([sleep_task], settings=settings)
@@ -302,7 +306,7 @@ async def test_a_second_signal_during_phase_two_settles_every_controller_before_
     live = [
         t.get_name()
         for t in asyncio.all_tasks()
-        if t.get_name().startswith(("attempt-", "heartbeat-", "run-"))
+        if t.get_name().startswith(("attempt-", "renewals", "run-"))
     ]
     assert live == []
     assert any("abandoned unsettled attempt" in r.message for r in caplog.records)
@@ -313,13 +317,13 @@ async def test_the_release_of_an_unstarted_claim_retries_through_an_outage(
     conn, settings, run_worker, monkeypatch
 ):
     original_claim = store.claim
-    original_release = store.release
+    original_release = store.complete
     holder: dict[str, Worker] = {}
     outage = {"left": 3}
 
     async def claim_then_stop(*args, **kwargs):
         row = await original_claim(*args, **kwargs)
-        if row is not None:
+        if row:
             holder["worker"].request_shutdown()
         return row
 
@@ -331,7 +335,7 @@ async def test_the_release_of_an_unstarted_claim_retries_through_an_outage(
         return await original_release(*args, **kwargs)
 
     monkeypatch.setattr(store, "claim", claim_then_stop)
-    monkeypatch.setattr(store, "release", flaky_release)
+    monkeypatch.setattr(store, "complete", flaky_release)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 0.1)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 0.1)
     worker = Worker([sleep_task], settings=settings)
@@ -355,7 +359,7 @@ async def test_a_second_signal_during_phase_two_settles_a_process_runner_and_its
         msg = "simulated outage"
         raise psycopg.OperationalError(msg)
 
-    monkeypatch.setattr(store, "release", down)
+    monkeypatch.setattr(store, "complete", down)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 0.1)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 0.1)
     hostile = process_task(
@@ -382,7 +386,7 @@ async def test_a_second_signal_during_phase_two_settles_a_process_runner_and_its
     live = [
         t.get_name()
         for t in asyncio.all_tasks()
-        if t.get_name().startswith(("attempt-", "heartbeat-", "run-"))
+        if t.get_name().startswith(("attempt-", "renewals", "run-"))
     ]
     assert live == []
     assert sandbox.find_marked("FRONTA_TASK_ID", str(task_id)) == []
@@ -399,7 +403,7 @@ async def test_an_immediate_shutdown_cuts_a_stuck_unstarted_release_short(
 
     async def claim_then_stop_twice(*args, **kwargs):
         row = await original_claim(*args, **kwargs)
-        if row is not None:
+        if row:
             holder["worker"].request_shutdown()
             holder["worker"].request_shutdown()
         return row
@@ -409,7 +413,7 @@ async def test_an_immediate_shutdown_cuts_a_stuck_unstarted_release_short(
         raise psycopg.OperationalError(msg)
 
     monkeypatch.setattr(store, "claim", claim_then_stop_twice)
-    monkeypatch.setattr(store, "release", down)
+    monkeypatch.setattr(store, "complete", down)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 5.0)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 5.0)
     worker = Worker([sleep_task], settings=settings)
@@ -427,3 +431,93 @@ async def test_an_immediate_shutdown_cuts_a_stuck_unstarted_release_short(
 
 async def _has_task_marker(task_id):
     return bool(sandbox.find_marked("FRONTA_TASK_ID", str(task_id)))
+
+
+# Folded batch regressions
+
+
+async def batch_claims(conn, count=16, types=None):
+    return await store.claim(
+        conn, types=types or ["sleep"], worker="batch", lease_s=30, deadline_s=1, count=count
+    )
+
+
+async def batch_seed(conn, definition=sleep_task, count=16):
+    await store.publish_task_type(conn, definition.spec)
+    return [
+        await store.enqueue(conn, NewTask(definition.name, "{}", Policy(max_attempts=2)))
+        for _ in range(count)
+    ]
+
+
+async def batch_all_done(conn, ids):
+    rows = await (
+        await conn.execute(
+            "SELECT count(*) FROM fronta.tasks WHERE id=ANY(%s) AND state='succeeded'", (ids,)
+        )
+    ).fetchone()
+    return rows[0] == len(ids)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="bubblewrap process sandboxes require Linux")
+async def test_process_batch_settles_sandboxes_before_acknowledging_outcomes(
+    conn, dsn, monkeypatch, run_worker
+):
+    definition = process_task("process_batch", ["/bin/sh", "-c", "sleep 1; cat"], input=In)
+    ids = await batch_seed(conn, definition, 12)
+    original = store.complete
+    written = []
+
+    async def checked_write(c, batch):
+        for outcome in batch:
+            assert not await asyncio.to_thread(
+                sandbox.find_marked, "FRONTA_TASK_ID", str(outcome.id)
+            )
+        written.extend(batch)
+        return await original(c, batch)
+
+    monkeypatch.setattr(store, "complete", checked_write)
+    settings = Settings(dsn=dsn, **FAST)
+
+    async def started():
+        return (await store.get_task(conn, ids[0])).state is State.RUNNING
+
+    async def terminal():
+        row = await (
+            await conn.execute(
+                "SELECT count(*) FROM fronta.tasks WHERE id=ANY(%s)"
+                " AND state IN ('succeeded','cancelled')",
+                (ids,),
+            )
+        ).fetchone()
+        return row[0] == len(ids)
+
+    async with run_worker(Worker([definition], settings=settings)):
+        await wait_until(started)
+        await store.request_cancel(conn, ids[0])
+        await wait_until(terminal, timeout=30)
+    assert Counter(c.kind for c in written) == {"succeed": 11, "cancel": 1}
+    assert (await store.get_task(conn, ids[0])).state is State.CANCELLED
+    assert [(await store.get_task(conn, i)).attempt for i in ids] == [1] * len(ids)
+
+
+async def test_shutdown_releases_every_unstarted_batch_row(conn, dsn, monkeypatch):
+    ids = await batch_seed(conn, count=5)
+    worker = Worker(
+        [sleep_task],
+        settings=Settings(dsn=dsn, **FAST),
+    )
+    original = store.claim
+
+    async def stop_after_claim(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        worker.request_shutdown()
+        return rows
+
+    monkeypatch.setattr(store, "claim", stop_after_claim)
+    assert await worker.run() == 0
+    for i in ids:
+        row = await store.get_task(conn, i)
+        assert row.state is State.QUEUED
+        assert row.failures == 0
+        assert row.result is None

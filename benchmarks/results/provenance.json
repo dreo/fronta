@@ -1,0 +1,28 @@
+{
+  "durable-throughput.json": {
+    "original_path": "benchmarks/results/simplification-sustain-locking-durable-throughput.json",
+    "sha256": "d245fc6bb48c1cc30ce7d8a4e3b73619445d7656b023c843d2aab6bfdf9a573d"
+  },
+  "durable-throughput-grade.json": {
+    "original_path": "benchmarks/results/simplification-sustain-locking-durable-throughput-grade-v2.json",
+    "sha256": "43147a725e5e8caa785848625ac4145439e501996b135882843da31e07c77beb"
+  },
+  "physical-soak.json": {
+    "original_path": "benchmarks/results/simplification-sustain-perpetron-3h.json",
+    "sha256": "d2b4d7f29eb31d76a871a4c35cbf59ace65f8a9cb693ef035265eb31c647c6ad"
+  },
+  "physical-soak-grade.json": {
+    "original_path": "benchmarks/results/simplification-sustain-perpetron-3h-grade.json",
+    "sha256": "625a85913f2a2566eb7baea9c5279aac4ed489eb3ad21470090ac0683a5e748d"
+  },
+  "physical-soak.svg": {
+    "original_path": "benchmarks/results/simplification-sustain-perpetron-3h-capacity.svg",
+    "sha256": "68a5041c7689b64b65bbd78879adb89b2f61f1d0a2debbaf18ed8f9943708d47"
+  },
+  "transformations": {
+    "physical-soak.svg": {
+      "change": "Strip trailing whitespace only",
+      "release_sha256": "4905a9290e0c47a699a43e236cf0c58b624811ffba07f4cbcdf45f7de7d2e224"
+    }
+  }
+}

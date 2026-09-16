@@ -16,13 +16,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import math
 import os
 import random
 import signal
 import sys
 import threading
 import time
+from collections import deque
 from contextlib import AbstractAsyncContextManager
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
@@ -40,11 +40,11 @@ from fronta.errors import (
     ResultSerializationError,
 )
 from fronta.executors import AsyncioExecution, Execution, ProcessExecution, ProcessFailed
+from fronta.model import Completion, CompletionKind, State
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
     from datetime import datetime
-    from uuid import UUID
 
     from psycopg_pool import AsyncConnectionPool
 
@@ -62,7 +62,6 @@ of an unexpected error: the worker shut down in order and leaves the restart to 
 
 _TRANSITION_RETRY_S = 1.0
 _TRANSITION_RETRY_MAX_S = 10.0
-_RENEW_RETRY_S = 1.0
 _WATCHDOG_TICK_S = 0.5
 _FINAL_ERRORS = (NonRetryableError, InputValidationError, ResultSerializationError)
 
@@ -94,6 +93,7 @@ class TaskContext[StateT]:
         self._attempt = attempt
         self.task_id = attempt.row.id
         self.attempt = attempt.row.attempt
+        self.metadata = attempt.row.metadata
         self.state = state
         self.cancelled = asyncio.Event()
         self.log: logging.LoggerAdapter[logging.Logger] = TaskLogAdapter(
@@ -121,11 +121,13 @@ class TaskContext[StateT]:
         run_at: datetime | None = None,
         key: str | None = None,
         concurrency_key: str | None = None,
+        metadata: JSON = None,
     ) -> int:
         worker = self._attempt.worker
-        async with worker.pool.connection() as conn, conn.transaction():
+        async with worker.pool.connection() as conn:
             # The worker's own caps and deadline, never the process-global SDK configuration.
-            return await task.enqueue_with(
+            # enqueue_with owns the commit/notification boundary on this autocommit connection.
+            task_id = await task.enqueue_with(
                 worker.settings,
                 input,
                 conn=conn,
@@ -133,7 +135,12 @@ class TaskContext[StateT]:
                 run_at=run_at,
                 key=key,
                 concurrency_key=concurrency_key,
+                metadata=metadata,
             )
+
+        if task.name in worker.definitions:
+            worker._wake.set()
+        return task_id
 
 
 class Attempt:
@@ -152,6 +159,7 @@ class Attempt:
         # Monotonic time before the claim was issued: a conservative bound on the lease's age.
         self.claimed_at = time.monotonic() if claimed_at is None else claimed_at
         self._renewed_at = self.claimed_at
+        self._renew_requested = False
         self.ctx = TaskContext(self, worker.state)
         self.execution = self._make_execution()
         self.fatal = False
@@ -198,20 +206,17 @@ class Attempt:
         if delayed <= settings.heartbeat_s:
             return True
         self.ctx.log.warning("dispatched %.1fs after the claim; renewing the lease first", delayed)
-        beat = await self._renew()
-        if beat is store.Heartbeat.LOST:
+        confirmed = await self.worker._renew_attempts([self])
+        if self.cause is Cause.LOST:
             self.ctx.log.warning("lease lost before the attempt started; nothing runs")
             return False
-        if beat is None:
-            await self._transition("release", lambda c: store.release(c, self.row.id, self.token))
+        if not confirmed:
+            await self._complete("release")
             return False
-        if beat is store.Heartbeat.CANCEL_REQUESTED:
-            self.stop(Cause.CANCEL)
         return True
 
-    async def _run_execution(self) -> None:
+    async def _run_execution(self) -> None:  # one settlement protocol
         settings = self.worker.settings
-        heartbeat = asyncio.create_task(self._heartbeats(), name=f"heartbeat-{self.row.id}")
         runner = asyncio.create_task(self.execution.run(), name=f"run-{self.row.id}")
         stop = asyncio.create_task(self._stop_event.wait(), name=f"stop-{self.row.id}")
         try:
@@ -255,16 +260,19 @@ class Attempt:
             else:
                 await self._finish_completed(runner)
         finally:
-            if not isinstance(self.execution, AsyncioExecution):
-                await self._end_process_runner(runner)
+            await self._end_runner(runner)
             stop.cancel()
-            self._settled = True
-            heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat
 
-    async def _end_process_runner(self, runner: asyncio.Task[str]) -> None:
-        """Backstop for a controller that failed early: kill the sandbox, then await the runner."""
+    async def _end_runner(self, runner: asyncio.Task[str]) -> None:
+        """A controller owns its runner through cleanup, even if cancelled or failed early."""
+        settings = self.worker.settings
+        if isinstance(self.execution, AsyncioExecution):
+            if not runner.done() and not self.fatal:
+                if not runner.cancelling():
+                    runner.cancel()
+                await asyncio.wait({runner}, timeout=settings.grace_s + settings.kill_timeout_s)
+                self.fatal = not runner.done()
+            return
         await self._kill_execution()
         runner.cancel()
         while not runner.done():  # its cleanup is bounded by the configured timeouts
@@ -294,15 +302,10 @@ class Attempt:
         exc = None if runner.cancelled() else runner.exception()
         if exc is None and not runner.cancelled():
             result = runner.result()
-            await self._transition(
-                "succeed", lambda c: store.succeed(c, self.row.id, self.token, result)
-            )
+            await self._complete("succeed", result)
         elif isinstance(exc, _FINAL_ERRORS):
             error = self._error_json(exc)
-            await self._transition(
-                "fail (final)",
-                lambda c: store.fail(c, self.row.id, self.token, error, retry=False),
-            )
+            await self._complete("fail_final", error)
         else:
             if isinstance(exc, ProcessFailed):
                 failure = self._metadata_json(exc.metadata)
@@ -312,9 +315,7 @@ class Attempt:
                 )
             else:
                 failure = self._error_json(exc)
-            await self._transition(
-                "fail", lambda c: store.fail(c, self.row.id, self.token, failure, retry=True)
-            )
+            await self._complete("fail", failure)
 
     def _error_json(self, exc: BaseException) -> str:
         try:
@@ -346,77 +347,74 @@ class Attempt:
                 "message": f"attempt exceeded {self.row.attempt_timeout_s} s",
             }
             timeout_error = codec.encode(metadata)
-            await self._transition(
-                "fail (timeout)",
-                lambda c: store.fail(c, self.row.id, self.token, timeout_error, retry=True),
-            )
+            await self._complete("fail", timeout_error)
         elif self.cause is Cause.CANCEL:
-            await self._transition(
-                "cancel ack", lambda c: store.ack_cancel(c, self.row.id, self.token)
-            )
+            await self._complete("cancel")
         elif self.cause is Cause.SHUTDOWN:
-            await self._transition("release", lambda c: store.release(c, self.row.id, self.token))
+            await self._complete("release")
         else:
             self.ctx.log.warning("token lost; outcome discarded")
 
-    async def _transition(self, what: str, op: Callable[[store.Conn], Awaitable[object]]) -> None:
-        """Apply the fenced transition, retrying connection errors until a definitive answer."""
-        await fenced_write(self.worker.pool, self.ctx.log, what, op)
+    async def _complete(self, kind: CompletionKind, data: str | None = None) -> None:
+        outcome = await self.worker._completions.complete(
+            Completion(self.row.id, self.token, kind, data)
+        )
+        if outcome is None:
+            self.ctx.log.warning("%s rejected: token no longer valid", kind)
+        else:
+            self.ctx.log.info("%s -> %s", kind, outcome)
 
-    async def _renew(self) -> store.Heartbeat | None:
-        """One fenced lease renewal within its budget; None when the database gave no answer.
 
-        The renewal connection is reserved for this purpose, and the budget covers acquiring
-        it, the statement and the commit, so neither pool contention nor a slow statement can
-        stretch a renewal past the lease.
-        """
-        settings = self.worker.settings
-        started = time.monotonic()
+class _Completions:
+    def __init__(
+        self,
+        write: Callable[[list[Completion]], Awaitable[dict[int, State]]],
+    ) -> None:
+        self.write = write
+        self.pending: deque[tuple[Completion, asyncio.Future[State | None]]] = deque()
+        self._task: asyncio.Task[None] | None = None
+
+    async def complete(self, completion: Completion) -> State | None:
+        future: asyncio.Future[State | None] = asyncio.get_running_loop().create_future()
+        self.pending.append((completion, future))
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run(), name="fronta-completions")
+        return await future
+
+    async def _run(self) -> None:
+        batch: list[tuple[Completion, asyncio.Future[State | None]]] = []
         try:
-            async with asyncio.timeout(settings.renew_timeout_s):
-                async with self.worker.renewal_pool.connection() as conn:
-                    beat = await store.heartbeat(conn, self.row.id, self.token, settings.lease_s)
-        except TimeoutError:
-            self.ctx.log.warning(
-                "lease renewal exceeded its %.1fs budget", settings.renew_timeout_s
-            )
-            return None
-        except (psycopg.OperationalError, psycopg.InterfaceError) as exc:
-            self.ctx.log.warning("lease renewal failed: %s", exc)
-            return None
-        self._renewed_at = started
-        return beat
+            while self.pending:
+                ids: set[int] = set()
+                while self.pending and len(batch) < 256:  # noqa: PLR2004  # bounded outcomes
+                    completion = self.pending[0][0]
+                    if completion.id in ids:
+                        break
+                    ids.add(completion.id)
+                    batch.append(self.pending.popleft())
+                # A cancelled controller no longer owns delivery; the reaper resolves its row.
+                active = [c for c, future in batch if not future.cancelled()]
+                applied = await self.write(active) if active else {}
+                for completion, future in batch:
+                    if not future.done():
+                        future.set_result(applied.get(completion.id))
+                batch = []
+        except BaseException as exc:
+            for _, future in [*batch, *self.pending]:
+                if not future.done():
+                    if isinstance(exc, asyncio.CancelledError):
+                        future.cancel()
+                    else:
+                        future.set_exception(exc)
+            self.pending.clear()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            # Futures deliver an unexpected write failure to their attempt controllers.
 
-    async def _heartbeats(self) -> None:
-        """Renew the lease on a fixed cadence until the attempt is settled or the lease is lost.
-
-        The cadence is anchored to the start of the last confirmed renewal (the claim counts as
-        one), not to its completion, so renewal latency never stretches the interval; a renewal
-        without an answer is retried soon. `_settled` is the backstop for a cancellation that a
-        database library swallows inside `connection()` (psycopg-pool < 3.2.8 did), so a finished
-        attempt can never keep heartbeating until the pool closes.
-        """
-        settings = self.worker.settings
-        while not self._settled:
-            delay = self._renewed_at + settings.heartbeat_s - time.monotonic()
-            if delay > 0:
-                await asyncio.sleep(delay)
-            if self._settled:
-                return
-            beat = await self._renew()
-            if beat is store.Heartbeat.LOST:
-                self.ctx.log.warning("heartbeat rejected: lease lost")
-                self.stop(Cause.LOST)
-                return  # the lease is gone; further beats would only be rejected
-            if beat is store.Heartbeat.CANCEL_REQUESTED:
-                self.stop(Cause.CANCEL)
-            if beat is None:
-                unconfirmed = time.monotonic() - self._renewed_at
-                if unconfirmed > settings.lease_s:
-                    self.ctx.log.error(
-                        "no renewal confirmed for %.0fs: the lease may have expired", unconfirmed
-                    )
-                await asyncio.sleep(min(_RENEW_RETRY_S, settings.heartbeat_s / 2))
+    async def close(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
 
 
 class Worker[StateT]:
@@ -443,15 +441,17 @@ class Worker[StateT]:
         self.state: StateT = cast("StateT", None)
         self.worker_id = sandbox.worker_id()
         self.attempts: dict[int, Attempt] = {}
+        self._completions = _Completions(self._write_completions)
         self._pool: AsyncConnectionPool[Any] | None = None
         self._renewal_pool: AsyncConnectionPool[Any] | None = None
         self._wake = asyncio.Event()
+        self._renew_now = asyncio.Event()
         self._stopping = asyncio.Event()
         self.started = asyncio.Event()
         self._immediate = asyncio.Event()
         self._exit_code = 0
         self._last_tick = time.monotonic()
-        self._watchdog_stop = threading.Event()
+        self._background_stop = threading.Event()
         self._signals = 0
 
     @property
@@ -516,18 +516,38 @@ class Worker[StateT]:
                 self.state = state
                 await self._serve()
         finally:
-            await self._abandon_leftovers()
-            await self._renewal_pool.close()
-            await self._pool.close()
-            self._pool = None
-            self._renewal_pool = None
-            log.info("worker %s stopped (exit %s)", self.worker_id, self._exit_code)
-            if self._exit_code == EXIT_FATAL:
-                # A coroutine that ignores cancellation would also block the event loop's own
-                # teardown: the only deterministic way out is a hard exit after our cleanup.
-                logging.shutdown()
-                os._exit(EXIT_FATAL)
+            await _finish_cleanup(self._close())
         return self._exit_code
+
+    async def _close(self) -> None:
+        """Finish owned cleanup even if the caller cancels run() repeatedly."""
+        await self._completions.close()
+        await runtime.close_hints(immediate=self._immediate.is_set())
+        await self.renewal_pool.close()
+        await self.pool.close()
+        self._pool = None
+        self._renewal_pool = None
+        log.info("worker %s stopped (exit %s)", self.worker_id, self._exit_code)
+        if self._exit_code == EXIT_FATAL:
+            # An uncooperative coroutine also blocks event-loop teardown.
+            logging.shutdown()
+            os._exit(EXIT_FATAL)
+
+    async def _write_completions(self, completions: list[Completion]) -> dict[int, State]:
+        applied = (
+            await fenced_write(
+                self.pool, log, "completion batch", lambda conn: store.complete(conn, completions)
+            )
+            or {}
+        )
+        if applied:
+            runtime.hints(self.settings).feed(applied.values())
+            runtime.hints(self.settings).wake(
+                self.attempts[i].row.type
+                for i, state in applied.items()
+                if state is State.QUEUED and i in self.attempts
+            )
+        return applied
 
     def _lifespan_cm(self) -> AbstractAsyncContextManager[Any]:
         if self.lifespan is None:
@@ -535,6 +555,8 @@ class Worker[StateT]:
         return self.lifespan(self)
 
     async def _start_checks(self) -> None:
+        async with asyncio.timeout(self.settings.connect_timeout_s), self.pool.connection() as conn:
+            await store.check_schema(conn)
         # One transaction: either every definition is published or none is.
         async with self.pool.connection() as conn, conn.transaction():
             for definition in self.definitions.values():
@@ -580,6 +602,7 @@ class Worker[StateT]:
         loops = [
             asyncio.create_task(self._tick(), name="tick"),
             asyncio.create_task(self._listen(), name="listener"),
+            asyncio.create_task(self._renewals(), name="renewals"),
             asyncio.create_task(self._reaper(), name="reaper"),
             asyncio.create_task(self._purger(), name="purger"),
         ]
@@ -598,10 +621,15 @@ class Worker[StateT]:
             await self._drain()
             raise
         finally:
-            for loop_task in loops:
-                loop_task.cancel()
-            await asyncio.gather(*loops, return_exceptions=True)
-            self._watchdog_stop.set()
+            await _finish_cleanup(self._stop_loops(loops))
+
+    async def _stop_loops(self, loops: list[asyncio.Task[None]]) -> None:
+        # Handler cleanup still owns lifespan resources and renewal connections here.
+        await self._abandon_leftovers()
+        self._background_stop.set()
+        for loop_task in loops:
+            loop_task.cancel()
+        await asyncio.gather(*loops, return_exceptions=True)
 
     async def _drain(self) -> None:
         """Let running attempts finish within the grace period, then stop and settle the rest.
@@ -651,10 +679,7 @@ class Worker[StateT]:
         log.error("exit with %d unsettled attempt(s): %s", len(pending), sorted(self.attempts))
         for task in pending:
             task.cancel()
-        await asyncio.wait(pending, timeout=self.settings.kill_timeout_s)
-        for task in pending:
-            if not task.done():
-                log.error("attempt task %s is still alive at exit", task.get_name())
+        await asyncio.gather(*pending, return_exceptions=True)
 
     def _stop_budget_s(self) -> float:
         """Upper bound of one attempt's stop protocol.
@@ -687,70 +712,83 @@ class Worker[StateT]:
     # ------------------------------------------------------------------ loops
 
     async def _claim_loop(self) -> None:
-        """Fill free slots; claims run concurrently up to the pool size, one transaction each.
-
-        A claimed row starts its attempt the moment its own claim returns: a slow sibling claim
-        (a long candidate walk, a lock wait) never delays it. Rows that a claim returns after
-        the shutdown signal landed are released, never started.
-        """
-        settings = self.settings
         types = sorted(self.definitions)
-        parallel = max(1, settings.pool_size - 1)
+        ceiling = self.settings.poll_interval_s
+        initial = min(0.05, ceiling)
+        delay = initial
         while not self._stopping.is_set():
-            free = settings.concurrency - len(self.attempts)
-            if free > 0:
-                started = await asyncio.gather(
-                    *(self._claim_and_dispatch(types) for _ in range(min(free, parallel)))
-                )
-                if self._stopping.is_set():
-                    return
-                if any(started):
-                    continue
             self._wake.clear()
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._wake.wait(), settings.poll_interval_s)
-
-    async def _claim_and_dispatch(self, types: list[str]) -> bool:
-        """One claim; its row is dispatched (or released) as soon as it is back."""
-        claimed_at = time.monotonic()
-        row = await self._claim(types)
-        if row is None:
-            return False
-        if self._stopping.is_set():
-            await self._release_unstarted([row])
-            return False
-        self._start_attempt(row, claimed_at)
-        return True
-
-    async def _release_unstarted(self, rows: list[TaskRow]) -> None:
-        """Rows claimed while the shutdown signal landed go straight back to the queue."""
-        for row in rows:
-            if row.token is None:  # pragma: no cover  # a claimed row always carries a token
+            free = self.settings.concurrency - len(self.attempts)
+            if free > 0 and await self._claim_batch_and_dispatch(types, free):
+                delay = initial
                 continue
-            await fenced_write(
-                self.pool,
-                log,
-                f"release of unstarted task {row.id}",
-                _release_op(row.id, row.token),
-                abort=self._immediate,
-            )
+            if self._stopping.is_set():
+                return
+            timeout = min(ceiling, delay * random.uniform(0.8, 1.2))  # noqa: S311  # poll jitter
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout)
+                delay = initial
+            except TimeoutError:
+                delay = min(ceiling, delay * 2)
 
-    async def _claim(self, types: list[str]) -> TaskRow | None:
+    async def _claim_batch_and_dispatch(self, types: list[str], count: int) -> bool:
+        claimed_at = time.monotonic()
         settings = self.settings
         try:
             async with self.pool.connection() as conn:
-                return await store.claim(
+                rows = await store.claim(
                     conn,
                     types=types,
                     worker=self.worker_id,
                     lease_s=settings.lease_s,
                     deadline_s=settings.poll_interval_s,
-                    lock_timeout_s=settings.claim_lock_timeout_s,
+                    count=count,
                 )
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            await self._release_orphans()
+            return False
         except psycopg.Error as exc:
-            log.warning("claim failed: %s", exc)
+            log.warning("batch claim failed: %s", exc)
             await asyncio.sleep(_TRANSITION_RETRY_S)
-            return None
+            return False
+        if self._stopping.is_set():
+            await self._release_unstarted(rows)
+            return False
+        if rows:
+            runtime.hints(settings).feed(["running"])
+        for row in rows:
+            self._start_attempt(row, claimed_at)
+        return bool(rows)
+
+    async def _release_orphans(self) -> None:
+        async def release(conn: store.Conn) -> object:
+            while True:
+                rows = await store.release_orphans(conn, self.worker_id, list(self.attempts))
+                if rows:
+                    runtime.hints(self.settings).feed(s for _, _, s in rows)
+                    runtime.hints(self.settings).wake(t for _, t, s in rows if s is State.QUEUED)
+                if len(rows) < 256:  # noqa: PLR2004  # same bound as claims
+                    return True
+
+        await fenced_write(
+            self.pool, log, "release orphaned claims", release, abort=self._immediate
+        )
+
+    async def _release_unstarted(self, rows: list[TaskRow]) -> None:
+        """Rows claimed while the shutdown signal landed go straight back to the queue."""
+        completions = [Completion(r.id, r.token, "release") for r in rows if r.token is not None]
+        applied = await fenced_write(
+            self.pool,
+            log,
+            "release unstarted claims",
+            lambda conn: store.complete(conn, completions),
+            abort=self._immediate,
+        )
+        if applied:
+            runtime.hints(self.settings).feed(applied.values())
+            runtime.hints(self.settings).wake(
+                r.type for r in rows if applied.get(r.id) is State.QUEUED
+            )
 
     def _start_attempt(self, row: TaskRow, claimed_at: float | None = None) -> None:
         attempt = Attempt(self, row, claimed_at=claimed_at)
@@ -793,9 +831,7 @@ class Worker[StateT]:
             try:
                 async with await psycopg.AsyncConnection.connect(
                     runtime.dsn_of(settings),
-                    autocommit=True,
-                    connect_timeout=max(1, math.ceil(settings.connect_timeout_s)),
-                    application_name="fronta-listener",
+                    **runtime.connection_kwargs(settings, "fronta-listener"),
                 ) as conn:
                     await conn.execute(
                         f"LISTEN {store.WAKE_CHANNEL}; LISTEN {store.CANCEL_CHANNEL}"
@@ -816,7 +852,68 @@ class Worker[StateT]:
             with contextlib.suppress(ValueError):
                 attempt = self.attempts.get(int(payload))
                 if attempt is not None:
+                    # Hints can arrive after requeue: only the current token's durable flag
+                    # authorizes cancellation. Wake the reserved renewal connection to check it.
+                    attempt._renew_requested = True
+                    self._renew_now.set()
+
+    async def _renew_attempts(self, attempts: list[Attempt]) -> bool:
+        settings = self.settings
+        started = time.monotonic()
+        live = []
+        for attempt in attempts:
+            if started - attempt._renewed_at >= settings.lease_s:
+                attempt.ctx.log.warning("lease lost: no confirmed renewal before the deadline")
+                attempt.stop(Cause.LOST)
+            elif not attempt._settled and attempt.cause is not Cause.LOST:
+                live.append(attempt)
+        attempts = live
+        if not attempts:
+            return False
+        remaining = min(a._renewed_at + settings.lease_s - started for a in attempts)
+        budget = min(settings.renew_timeout_s, max(0.001, remaining))
+        try:
+            async with asyncio.timeout(budget), self.renewal_pool.connection() as conn:
+                beats = await store.heartbeat(
+                    conn, [(a.row.id, a.token) for a in attempts], settings.lease_s
+                )
+        except (TimeoutError, psycopg.OperationalError, psycopg.InterfaceError) as exc:
+            log.warning("lease renewal unconfirmed: %s", exc)
+            return False
+        for attempt in attempts:
+            if attempt.row.id not in beats:
+                attempt.ctx.log.warning("heartbeat rejected: lease lost")
+                attempt.stop(Cause.LOST)
+            else:
+                attempt._renewed_at = started
+                if beats[attempt.row.id] is not None:
                     attempt.stop(Cause.CANCEL)
+        return True
+
+    async def _renewals(self) -> None:
+        interval = self.settings.heartbeat_s / 2
+        # Also stop when a database driver returns after swallowing task cancellation.
+        while not self._background_stop.is_set():
+            self._renew_now.clear()
+            started = time.monotonic()
+            due = [
+                a
+                for a in self.attempts.values()
+                if not a._settled
+                and a.cause is not Cause.LOST
+                and (a._renew_requested or started - a._renewed_at >= interval)
+            ]
+            for attempt in due:
+                attempt._renew_requested = False
+            for offset in range(0, len(due), 1000):
+                await self._renew_attempts(due[offset : offset + 1000])
+                for attempt in self.attempts.values():
+                    if time.monotonic() - attempt._renewed_at >= self.settings.lease_s:
+                        attempt.stop(Cause.LOST)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._renew_now.wait(), max(0, interval - (time.monotonic() - started))
+                )
 
     async def _reaper(self) -> None:
         settings = self.settings
@@ -826,6 +923,9 @@ class Worker[StateT]:
             try:
                 async with self.pool.connection() as conn:
                     reaped = await store.reap(conn)
+                if reaped:
+                    runtime.hints(settings).feed(s for _, _, s in reaped)
+                    runtime.hints(settings).wake(t for _, t, s in reaped if s is State.QUEUED)
                 for task_id, task_type, state in reaped:
                     log.warning(
                         "reaped task %s (%s): lease expired -> %s", task_id, task_type, state
@@ -849,6 +949,17 @@ class Worker[StateT]:
                     deleted += batch
                     if batch < settings.purge_batch:
                         break
+                while True:
+                    async with self.pool.connection() as conn:
+                        expired = await store.purge_events(
+                            conn, settings.retention_s, settings.purge_batch
+                        )
+                    for name, count in expired:
+                        log.warning(
+                            "purged %d unacknowledged events for subscription %r", count, name
+                        )
+                    if sum(count for _, count in expired) < settings.purge_batch:
+                        break
                 if deleted:
                     log.info("purged %d terminal task(s)", deleted)
             except (psycopg.Error, OSError) as exc:
@@ -866,7 +977,7 @@ class Worker[StateT]:
         the loop's tick task, and a resumed loop catches up within milliseconds.
         """
         stalls = 0
-        while not self._watchdog_stop.wait(_WATCHDOG_TICK_S):
+        while not self._background_stop.wait(_WATCHDOG_TICK_S):
             stalled = time.monotonic() - self._last_tick
             stalls = stalls + 1 if stalled > self.settings.lease_s else 0
             if stalls >= 2:  # noqa: PLR2004  # two consecutive observations
@@ -878,14 +989,28 @@ class Worker[StateT]:
                 os._exit(EXIT_FATAL)
 
 
-async def fenced_write(
+async def _finish_cleanup(operation: Awaitable[None]) -> None:
+    """Defer repeated caller cancellations until owned cleanup is complete."""
+    cleanup = asyncio.ensure_future(operation)
+    cancelled = False
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            cancelled = True
+    cleanup.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def fenced_write[T](
     pool: AsyncConnectionPool[Any],
     log_: logging.Logger | logging.LoggerAdapter[logging.Logger],
     what: str,
-    op: Callable[[store.Conn], Awaitable[object]],
+    op: Callable[[store.Conn], Awaitable[T]],
     *,
     abort: asyncio.Event | None = None,
-) -> None:
+) -> T | None:
     """Run a fenced write, retrying connection errors until the database gives a definitive answer.
 
     A definitive answer is 1 row (applied) or 0 rows (the token is gone: the reaper acted while
@@ -897,7 +1022,7 @@ async def fenced_write(
     while True:
         if abort is not None and abort.is_set():
             log_.error("%s abandoned by an immediate shutdown", what)
-            return
+            return None
         try:
             async with pool.connection() as conn:
                 outcome = await op(conn)
@@ -912,16 +1037,9 @@ async def fenced_write(
             continue
         except psycopg.Error:
             log_.exception("%s failed permanently; the reaper will requeue", what)
-            return
+            return None
         if outcome is None or outcome is False:
             log_.warning("%s rejected: token no longer valid", what)
         else:
             log_.info("%s -> %s", what, outcome)
-        return
-
-
-def _release_op(task_id: int, token: UUID) -> Callable[[store.Conn], Awaitable[object]]:
-    async def op(conn: store.Conn) -> object:
-        return await store.release(conn, task_id, token)
-
-    return op
+        return outcome

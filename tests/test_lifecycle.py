@@ -9,6 +9,8 @@ from typing import Any
 
 import psycopg
 import pytest
+from jsonschema import Draft202012Validator
+from pydantic import BaseModel, Field, field_serializer
 
 from fronta import Backoff, ProgressTooLarge, Settings, State, Worker, store, task
 from fronta import worker as worker_module
@@ -100,6 +102,68 @@ async def test_result_violating_the_output_model_fails_without_retry(conn, setti
     assert row.attempt == 1
     assert row.error["type"] == "ResultSerializationError"
     assert "validation error" in row.error["message"]
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_aliased_results_match_the_published_output_schema(conn, settings, run_worker):
+    class Child(BaseModel):
+        job_id: int = Field(alias="jobId")
+
+    class Output(BaseModel):
+        child: Child = Field(alias="childResult")
+
+    @task("aliased_result", input=In, output=Output)
+    async def aliased_result(ctx, inp):
+        del ctx
+        return Output(childResult=Child(jobId=inp.n))
+
+    async with run_worker(Worker([aliased_result], settings=settings)):
+        task_id = await aliased_result.enqueue(In(n=7))
+        row = await settled(conn, task_id, State.SUCCEEDED)
+    assert row.result == {"childResult": {"jobId": 7}}
+    spec = await store.get_task_type(conn, aliased_result.name)
+    Draft202012Validator(spec.output_schema).validate(row.result)
+
+
+@pytest.mark.parametrize("invalid", ["oops", -1])
+@pytest.mark.usefixtures("sdk")
+async def test_mutated_output_models_fail_without_retry(conn, settings, run_worker, invalid):
+    class Output(BaseModel):
+        n: int = Field(ge=0)
+
+    @task("mutated_result", input=In, output=Output)
+    async def mutated_result(ctx, inp):
+        del ctx, inp
+        value = Output(n=1)
+        value.n = invalid
+        return value
+
+    async with run_worker(Worker([mutated_result], settings=settings)):
+        task_id = await mutated_result.enqueue(In())
+        row = await settled(conn, task_id, State.FAILED)
+    assert row.attempt == 1
+    assert row.result is None
+    assert row.error["type"] == "ResultSerializationError"
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_result_validation_preserves_custom_serialization(conn, settings, run_worker):
+    class Output(BaseModel):
+        n: int = Field(validation_alias="source", serialization_alias="rendered")
+
+        @field_serializer("n")
+        def serialize_n(self, value: int) -> str:
+            return f"v:{value}"
+
+    @task("custom_result", input=In, output=Output)
+    async def custom_result(ctx, inp):
+        del ctx
+        return Output(source=inp.n)
+
+    async with run_worker(Worker([custom_result], settings=settings)):
+        task_id = await custom_result.enqueue(In(n=3))
+        row = await settled(conn, task_id, State.SUCCEEDED)
+    assert row.result == {"rendered": "v:3"}
 
 
 @pytest.mark.usefixtures("sdk")
@@ -344,7 +408,7 @@ async def test_the_final_transition_retries_through_a_database_outage(
     conn, settings, run_worker, monkeypatch
 ):
     """Success is never lost to an outage: the transition retries until the database answers."""
-    original = store.succeed
+    original = store.complete
     failures = {"left": 4}
 
     async def flaky(*args, **kwargs):
@@ -354,7 +418,7 @@ async def test_the_final_transition_retries_through_a_database_outage(
             raise psycopg.OperationalError(msg)
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(store, "succeed", flaky)
+    monkeypatch.setattr(store, "complete", flaky)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 0.2)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 0.2)
     async with run_worker(Worker([sleep_task], settings=settings)):

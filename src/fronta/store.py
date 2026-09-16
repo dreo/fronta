@@ -1,26 +1,31 @@
-"""Every SQL statement of Fronta, as typed async functions over a psycopg connection.
+"""Queue SQL and its SQL resources, as typed async functions over a psycopg connection.
 
-Transactions: functions that must be atomic open their own transaction block on the given
-connection (nested inside a caller's transaction that becomes a savepoint). `enqueue` is the
-exception: it only executes statements, so it joins the caller's transaction and never commits it.
+Transactions: multi-statement operations open a block (a savepoint inside a caller transaction).
+Managed transitions are single statements; callers send hints after commit.
+`enqueue` is an exception: it only executes statements, so it joins the caller's transaction
+and never commits it.
 Every worker write is fenced by `state = 'running' AND token = $token`.
 """
 
 from __future__ import annotations
 
 import json
-import math
+import re
 import time
-from enum import StrEnum
 from importlib import resources
 from typing import TYPE_CHECKING, Any
-from uuid import UUID, uuid4
 
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from fronta.errors import InvalidInput
+from fronta.errors import (
+    ConfigurationError,
+    InvalidInput,
+    NotRequeueable,
+    TaskNotFound,
+    UnknownTaskType,
+)
 from fronta.model import (
     MAX_KEY_BYTES,
     MAX_NAME_BYTES,
@@ -34,20 +39,25 @@ from fronta.model import (
 )
 
 if TYPE_CHECKING:
-    from fronta.model import NewTask, TaskFilter, TaskTypeSpec
+    from datetime import datetime
+    from uuid import UUID
+
+    from fronta.model import Completion, NewTask, TaskFilter, TaskTypeSpec
 
 type Conn = psycopg.AsyncConnection[Any]
 """Any connection; each query sets its own row factory, so the connection row type is moot."""
 
+SCHEMA_VERSION = 1
+
 WAKE_CHANNEL = "fronta_wake"
 CANCEL_CHANNEL = "fronta_cancel"
-EVENTS_CHANNEL = "fronta_events"
+FEED_CHANNEL = "fronta_feed"
 
 _TASK_COLUMNS = (
     "id", "type", "state", "priority", "key", "concurrency_key", "input", "result", "error",
     "progress", "attempt", "failures", "max_attempts", "attempt_timeout_s", "backoff_base_s",
     "backoff_factor", "backoff_cap_s", "token", "lease_until", "worker", "cancel_requested_at",
-    "created_at", "run_at", "started_at", "finished_at",
+    "created_at", "run_at", "started_at", "finished_at", "metadata",
 )  # fmt: skip
 
 _SUMMARY_COLUMNS = (
@@ -58,6 +68,7 @@ _SUMMARY_COLUMNS = (
 
 _TASK_TYPE_COLUMNS = (
     "name", "executor", "input_schema", "output_schema", "policy", "fingerprint", "updated_at",
+    "paused",
 )  # fmt: skip
 
 
@@ -70,90 +81,86 @@ _BACKOFF = (
     " * power({t}backoff_factor, least({t}failures, 64))) * (0.5 + 0.5 * random()))"
 )
 
-_ENQUEUE = sql.SQL("""
+_PUBLISHED = """
+INSERT INTO fronta.events (subscription, task_id, type, state, attempt)
+SELECT s.name, a.id, a.type, a.state, a.attempt
+FROM applied a CROSS JOIN LATERAL (
+    SELECT s.name FROM fronta.subscriptions s
+    WHERE a.state = ANY(s.states) AND (s.types IS NULL OR a.type = ANY(s.types))
+    FOR KEY SHARE OF s
+) s
+"""
+
+
+def _with_events(query: sql.SQL | sql.Composed, columns: str, *, where: str = "") -> sql.Composed:
+    return sql.SQL(
+        "WITH applied AS ({query}), published AS ({published}{where}) SELECT {columns} FROM applied"
+    ).format(
+        query=query,
+        published=sql.SQL(_PUBLISHED),
+        where=sql.SQL(where),
+        columns=sql.SQL(columns),
+    )
+
+
+_ENQUEUE: sql.SQL | sql.Composed = sql.SQL("""
 INSERT INTO fronta.tasks (type, state, priority, key, concurrency_key, input, max_attempts,
-    attempt_timeout_s, backoff_base_s, backoff_factor, backoff_cap_s, run_at)
+    attempt_timeout_s, backoff_base_s, backoff_factor, backoff_cap_s, run_at, metadata)
 VALUES (%(type)s, 'queued', %(priority)s, %(key)s, %(concurrency_key)s, %(input)s::jsonb,
     %(max_attempts)s, %(attempt_timeout_s)s, %(backoff_base_s)s, %(backoff_factor)s,
-    %(backoff_cap_s)s, coalesce(%(run_at)s, now()))
+    %(backoff_cap_s)s, coalesce(%(run_at)s, now()), %(metadata)s::jsonb)
 ON CONFLICT (type, key) WHERE key IS NOT NULL AND state IN ('queued', 'running') DO NOTHING
-RETURNING id
+RETURNING id, type, state, attempt
 """)
+_ENQUEUE = _with_events(_ENQUEUE, "id")
 
 _FIND_ACTIVE_BY_KEY = sql.SQL("""
 SELECT id FROM fronta.tasks
 WHERE type = %(type)s AND key = %(key)s AND state IN ('queued', 'running')
 """)
 
-# The saturated types and keys are computed once per claim (materialized CTEs) and looked up per
-# candidate row through hashed subplans (`NOT IN`), so the candidate walk stays an ordered index
-# scan that stops at the first eligible row; the per-row recount this replaces cost O(backlog of
-# a saturated type) on every claim. `NOT IN` (never `NOT EXISTS`) keeps the planner from turning
-# the skip into an anti-join over the whole queue. Neither CTE can yield NULLs.
-_CANDIDATE = sql.SQL("""
-WITH saturated_types AS MATERIALIZED (
-    SELECT ty.name FROM fronta.task_types ty
-    WHERE ty.name = ANY(%(types)s) AND ty.max_concurrency IS NOT NULL
-      AND ty.max_concurrency <= (
-        SELECT count(*) FROM fronta.tasks r WHERE r.type = ty.name AND r.state = 'running')
-), saturated_keys AS MATERIALIZED (
-    SELECT r.type, r.concurrency_key
-    FROM fronta.tasks r JOIN fronta.task_types ty ON ty.name = r.type
-    WHERE r.state = 'running' AND r.type = ANY(%(types)s) AND r.concurrency_key IS NOT NULL
-      AND ty.max_concurrency_per_key IS NOT NULL
-    GROUP BY r.type, r.concurrency_key, ty.max_concurrency_per_key
-    HAVING count(*) >= ty.max_concurrency_per_key
-)
-SELECT {cols}
-FROM fronta.tasks t
-WHERE t.state = 'queued' AND t.run_at <= now() AND t.type = ANY(%(types)s)
-  AND t.id <> ALL(%(skip)s)
-  AND EXISTS (SELECT 1 FROM fronta.task_types ty WHERE ty.name = t.type)
-  AND t.type NOT IN (SELECT name FROM saturated_types)
-  AND (t.concurrency_key IS NULL
-       OR (t.type, t.concurrency_key) NOT IN (SELECT type, concurrency_key FROM saturated_keys))
-ORDER BY t.priority DESC, t.run_at, t.id
-LIMIT 1 FOR UPDATE OF t SKIP LOCKED
-""").format(cols=_columns(_TASK_COLUMNS, "t."))
+# Shared by the server-side claim function and the benchmark EXPLAINs.
+_CANDIDATE = sql.SQL(resources.files("fronta").joinpath("claim_candidate.sql").read_text())
+_CLAIM = sql.SQL("""
+SELECT {cols} FROM fronta.{function}(
+    %(types)s::text[], %(worker)s::text, %(lease_s)s::float8, %(deadline_s)s::float8,
+    %(count)s::integer)
+""").format(cols=_columns(_TASK_COLUMNS), function=sql.Identifier(f"claim_v{SCHEMA_VERSION}"))
 
-_READ_LIMITS = sql.SQL(
-    "SELECT max_concurrency, max_concurrency_per_key FROM fronta.task_types WHERE name = %(type)s"
-)
-_SHARE_LIMITS = _READ_LIMITS + sql.SQL(" FOR SHARE")
-_LOCK_LIMITS = _READ_LIMITS + sql.SQL(" FOR UPDATE")
 
-_COUNT_RUNNING = sql.SQL("""
-SELECT count(*) AS by_type,
-       count(*) FILTER (WHERE concurrency_key IS NOT DISTINCT FROM %(key)s) AS by_key
-FROM fronta.tasks WHERE type = %(type)s AND state = 'running'
+def _completion_statement(outcomes: str) -> sql.Composed:
+    return sql.SQL(resources.files("fronta").joinpath("complete.sql").read_text()).format(
+        outcomes=sql.SQL(outcomes),
+        backoff=sql.SQL(_BACKOFF.format(t="t.")),
+        published=sql.SQL(_PUBLISHED),
+    )
+
+
+_COMPLETE = _completion_statement("""
+    SELECT * FROM unnest(%(ids)s::bigint[], %(tokens)s::uuid[], %(kinds)s::text[], %(data)s::text[])
+        AS c(id, token, kind, data)
+""")
+_ORPHANS = _completion_statement("""
+    SELECT id, token, 'release'::text AS kind, NULL::text AS data FROM fronta.tasks
+    WHERE worker = %(worker)s AND state = 'running' AND id <> ALL(%(live)s::bigint[])
+    ORDER BY id LIMIT 256
 """)
 
-# Lease timestamps use clock_timestamp(): the moment the row is written, after every lock the
-# transaction waited for. now() is the transaction start, which a claim blocked on the type's
-# row could leave far in the past and hand out a lease that is already partly consumed.
-_START = sql.SQL("""
-UPDATE fronta.tasks
-SET state = 'running', attempt = attempt + 1, token = %(token)s,
-    lease_until = clock_timestamp() + make_interval(secs => %(lease_s)s), started_at = now(),
-    worker = %(worker)s, progress = NULL
-WHERE id = %(id)s
-RETURNING {cols}
-""").format(cols=_columns(_TASK_COLUMNS))
 
 # The row is locked first: an UPDATE evaluates its new values before it waits for a row lock, so
 # a heartbeat blocked behind another writer would otherwise carry a stamp from before the wait.
 _HEARTBEAT = sql.SQL("""
-WITH locked AS (
-    SELECT id FROM fronta.tasks
-    WHERE id = %(id)s AND state = 'running' AND token = %(token)s
-    FOR UPDATE)
+WITH renewals AS (
+    SELECT * FROM unnest(%(ids)s::bigint[], %(tokens)s::uuid[]) AS r(id, token)
+), locked AS (
+    SELECT t.id, t.token FROM fronta.tasks t JOIN renewals r ON t.id = r.id
+    WHERE t.state = 'running' AND t.token = r.token ORDER BY t.id FOR UPDATE OF t
+)
 UPDATE fronta.tasks t
 SET lease_until = clock_timestamp() + make_interval(secs => %(lease_s)s)
-FROM locked WHERE t.id = locked.id
-RETURNING t.cancel_requested_at
+FROM locked WHERE t.id = locked.id AND t.state = 'running' AND t.token = locked.token
+RETURNING t.id, t.cancel_requested_at
 """)
-
-_LOCK_TIMEOUT = sql.SQL("SELECT set_config('lock_timeout', %(timeout)s, true)")
 
 _PROGRESS = sql.SQL("""
 UPDATE fronta.tasks SET progress = %(progress)s::jsonb
@@ -161,59 +168,15 @@ WHERE id = %(id)s AND state = 'running' AND token = %(token)s
 RETURNING id
 """)
 
-_SUCCEED = sql.SQL("""
-UPDATE fronta.tasks
-SET state = 'succeeded', result = %(result)s::jsonb, finished_at = now(),
-    token = NULL, lease_until = NULL
-WHERE id = %(id)s AND state = 'running' AND token = %(token)s
-RETURNING type, state
-""")
-
-_FAIL = sql.SQL("""
-UPDATE fronta.tasks
-SET failures = failures + 1, error = %(error)s::jsonb, token = NULL, lease_until = NULL,
-    state = CASE WHEN cancel_requested_at IS NOT NULL THEN 'cancelled'
-                 WHEN failures + 1 < max_attempts THEN 'queued' ELSE 'failed' END,
-    run_at = CASE WHEN cancel_requested_at IS NULL AND failures + 1 < max_attempts
-                  THEN {backoff} ELSE run_at END,
-    finished_at = CASE WHEN cancel_requested_at IS NOT NULL OR failures + 1 >= max_attempts
-                       THEN now() END
-WHERE id = %(id)s AND state = 'running' AND token = %(token)s
-RETURNING type, state
-""").format(backoff=sql.SQL(_BACKOFF.format(t="")))
-
-_FAIL_FINAL = sql.SQL("""
-UPDATE fronta.tasks
-SET failures = failures + 1, error = %(error)s::jsonb, token = NULL, lease_until = NULL,
-    state = 'failed', finished_at = now()
-WHERE id = %(id)s AND state = 'running' AND token = %(token)s
-RETURNING type, state
-""")
-
-_RELEASE = sql.SQL("""
-UPDATE fronta.tasks
-SET token = NULL, lease_until = NULL, run_at = now(),
-    state = CASE WHEN cancel_requested_at IS NOT NULL THEN 'cancelled' ELSE 'queued' END,
-    finished_at = CASE WHEN cancel_requested_at IS NOT NULL THEN now() END
-WHERE id = %(id)s AND state = 'running' AND token = %(token)s
-RETURNING type, state
-""")
-
-_REQUEST_CANCEL = sql.SQL("""
+_REQUEST_CANCEL: sql.SQL | sql.Composed = sql.SQL("""
 UPDATE fronta.tasks
 SET cancel_requested_at = coalesce(cancel_requested_at, now()),
     state = CASE WHEN state = 'queued' THEN 'cancelled' ELSE state END,
     finished_at = CASE WHEN state = 'queued' THEN now() ELSE finished_at END
 WHERE id = %(id)s AND state IN ('queued', 'running')
-RETURNING type, state
+RETURNING id, type, state, attempt
 """)
-
-_ACK_CANCEL = sql.SQL("""
-UPDATE fronta.tasks
-SET state = 'cancelled', finished_at = now(), token = NULL, lease_until = NULL
-WHERE id = %(id)s AND state = 'running' AND token = %(token)s AND cancel_requested_at IS NOT NULL
-RETURNING type, state
-""")
+_REQUEST_CANCEL = _with_events(_REQUEST_CANCEL, "type, state", where=" WHERE a.state = 'cancelled'")
 
 _REAP = sql.SQL("""
 WITH expired AS (
@@ -234,8 +197,39 @@ SET token = NULL, lease_until = NULL,
     finished_at = CASE WHEN t.cancel_requested_at IS NOT NULL OR t.failures + 1 >= t.max_attempts
                        THEN now() END
 FROM expired WHERE t.id = expired.id
-RETURNING t.id, t.type, t.state
+RETURNING t.id, t.type, t.state, t.attempt
 """).format(backoff=sql.SQL(_BACKOFF.format(t="t.")))
+_REAP = _with_events(_REAP, "id, type, state")
+
+_REQUEUE = _with_events(
+    sql.SQL("""
+UPDATE fronta.tasks SET state = 'queued', run_at = now(), failures = 0,
+    cancel_requested_at = NULL, finished_at = NULL, token = NULL, lease_until = NULL
+WHERE id = %(id)s AND state IN ('failed', 'cancelled')
+RETURNING id, type, state, attempt
+"""),
+    "type",
+)
+
+_STATS = sql.SQL("""
+SELECT jsonb_build_object(
+    'types', coalesce((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.type) FROM (
+        SELECT ty.name AS type,
+            count(t.id) FILTER (WHERE t.state='queued' AND t.run_at <= now()) AS queued_due,
+            count(t.id) FILTER (WHERE t.state='queued' AND t.run_at > now()) AS queued_scheduled,
+            count(t.id) FILTER (WHERE t.state='running') AS running,
+            extract(epoch FROM now() - min(t.run_at) FILTER (
+                WHERE t.state='queued' AND t.run_at <= now())) AS oldest_due_age_s
+        FROM fronta.task_types ty LEFT JOIN fronta.tasks t
+            ON t.type=ty.name AND t.state IN ('queued','running') GROUP BY ty.name
+    ) x), '[]'::jsonb),
+    'subscriptions', coalesce((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.name) FROM (
+        SELECT s.name, count(e.seq) AS backlog,
+            extract(epoch FROM now()-min(e.created_at)) AS oldest_event_age_s
+        FROM fronta.subscriptions s LEFT JOIN fronta.events e ON e.subscription=s.name
+        GROUP BY s.name
+    ) x), '[]'::jsonb))
+""")
 
 _PURGE_TASKS = sql.SQL("""
 DELETE FROM fronta.tasks WHERE id IN (
@@ -248,8 +242,9 @@ DELETE FROM fronta.tasks WHERE id IN (
 _PUBLISH = sql.SQL("""
 INSERT INTO fronta.task_types (name, executor, input_schema, output_schema, policy,
     max_concurrency, max_concurrency_per_key, fingerprint, updated_at)
-VALUES (%(name)s, %(executor)s, %(input_schema)s::jsonb, %(output_schema)s::jsonb,
-    %(policy)s::jsonb, %(max_concurrency)s, %(max_concurrency_per_key)s, %(fingerprint)s, now())
+SELECT %(name)s, %(executor)s, %(input_schema)s::jsonb, %(output_schema)s::jsonb,
+    %(policy)s::jsonb, %(max_concurrency)s, %(max_concurrency_per_key)s, %(fingerprint)s,
+    now()
 ON CONFLICT (name) DO UPDATE SET
     executor = EXCLUDED.executor, input_schema = EXCLUDED.input_schema,
     output_schema = EXCLUDED.output_schema, policy = EXCLUDED.policy,
@@ -272,16 +267,6 @@ _GET_TASK = sql.SQL("SELECT {cols} FROM fronta.tasks WHERE id = %(id)s").format(
 _LIST_TASKS = sql.SQL(
     "SELECT {cols} FROM fronta.tasks WHERE {conditions} ORDER BY id DESC LIMIT %(limit)s"
 )
-
-
-class Heartbeat(StrEnum):
-    ALIVE = "alive"
-    CANCEL_REQUESTED = "cancel_requested"
-    LOST = "lost"
-
-
-def new_token() -> UUID:
-    return uuid4()
 
 
 MIN_PRIORITY = -(2**31)
@@ -345,28 +330,75 @@ def _task_type(rec: dict[str, Any]) -> TaskTypeRow:
         policy=Policy.from_json(rec["policy"]),
         fingerprint=rec["fingerprint"],
         updated_at=rec["updated_at"],
+        paused=rec["paused"],
     )
-
-
-async def _notify(conn: Conn, channel: str, payload: str) -> None:
-    await conn.execute("SELECT pg_notify(%s, %s)", (channel, payload))
-
-
-async def _event(conn: Conn, task_id: int, task_type: str, state: State) -> None:
-    payload = json.dumps(
-        {"id": task_id, "type": task_type, "state": state.value}, separators=(",", ":")
-    )
-    await _notify(conn, EVENTS_CHANNEL, payload)
 
 
 # ---------------------------------------------------------------------------------------------
 # Schema and task types
 
 
-async def init_schema(conn: Conn) -> None:
-    """Apply `schema.sql`; safe to run repeatedly."""
-    ddl = resources.files("fronta").joinpath("schema.sql").read_text(encoding="utf-8")
-    await conn.execute(sql.SQL(ddl))
+def candidate_sql() -> str:
+    names = {
+        "types": "p_types",
+        "skip": "v_skip",
+        "skip_keys": "v_skip_keys",
+        "skip_types": "v_skip_types",
+        "skip_key_types": "v_skip_key_types",
+        "count": "(v_cap - cardinality(v_ids))",
+    }
+    return re.sub(r"%\((\w+)\)s", lambda match: names[match[1]], _CANDIDATE.as_string())
+
+
+def schema_sql() -> str:
+    ddl = resources.files("fronta").joinpath("schema.sql").read_text()
+    function = resources.files("fronta").joinpath("claim.sql").read_text()
+    function = function.replace("{candidate}", candidate_sql()).replace("{published}", _PUBLISHED)
+    function = function.replace("{version}", str(SCHEMA_VERSION))
+    return (
+        ddl + "\n" + function + "\nINSERT INTO fronta.meta (key, value) "
+        f"VALUES ('schema_version', '{SCHEMA_VERSION}') "
+        "ON CONFLICT (key) DO UPDATE SET value = greatest(\n"
+        "fronta.meta.value::int, EXCLUDED.value::int)::text;\n"
+    )
+
+
+async def init_schema(conn: Conn, *, prune: bool = False) -> None:
+    async with conn.transaction():
+        await conn.execute(sql.SQL(schema_sql()))
+        if prune:
+            rows = await (
+                await conn.execute("""
+                SELECT proname, pg_get_function_identity_arguments(p.oid)
+                FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'fronta'
+                  AND (proname ~ '^claim_v[0-9]+$' OR proname = 'claim_tasks')
+            """)
+            ).fetchall()
+            for name, arguments in rows:
+                if name == "claim_tasks" or int(name.removeprefix("claim_v")) < SCHEMA_VERSION:
+                    await conn.execute(
+                        sql.SQL("DROP FUNCTION fronta.{}({})").format(
+                            sql.Identifier(name),
+                            sql.SQL(arguments),
+                        )
+                    )
+
+
+async def check_schema(conn: Conn) -> None:
+    try:
+        row = await (
+            await conn.execute("SELECT value FROM fronta.meta WHERE key = 'schema_version'")
+        ).fetchone()
+        installed = 0 if row is None else int(row[0])
+    except (psycopg.errors.UndefinedTable, ValueError):
+        installed = 0
+    if installed < SCHEMA_VERSION:
+        msg = (
+            f"Fronta schema version {installed} is behind required version {SCHEMA_VERSION}; "
+            "run `fronta db init` before starting workers or the server"
+        )
+        raise ConfigurationError(msg)
 
 
 async def publish_task_type(conn: Conn, spec: TaskTypeSpec) -> str | None:
@@ -407,8 +439,7 @@ async def get_task_type(conn: Conn, name: str) -> TaskTypeRow | None:
 async def enqueue(conn: Conn, task: NewTask, deadline_s: float = 30.0) -> int:
     """Insert a queued task (or return the active task with the same type + key).
 
-    Runs inside whatever transaction the connection is in and never commits. NOTIFY fires when
-    that transaction commits.
+    Does not open an explicit transaction. The caller owns the data/notification boundary.
     """
     check_name(task.type)
     check_key(task.key, "key")
@@ -429,6 +460,7 @@ async def enqueue(conn: Conn, task: NewTask, deadline_s: float = 30.0) -> int:
         "backoff_factor": task.policy.backoff.factor,
         "backoff_cap_s": task.policy.backoff.cap_s,
         "run_at": task.run_at,
+        "metadata": task.metadata_json,
     }
     deadline = time.monotonic() + deadline_s
     while True:
@@ -436,8 +468,14 @@ async def enqueue(conn: Conn, task: NewTask, deadline_s: float = 30.0) -> int:
         rec = await cur.fetchone()
         if rec is not None:
             task_id = int(rec[0])
-            await _notify(conn, WAKE_CHANNEL, task.type)
-            await _event(conn, task_id, task.type, State.QUEUED)
+            if (
+                not conn.autocommit
+                or conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE
+            ):
+                await conn.execute(
+                    "SELECT pg_notify('fronta_wake', %s), pg_notify('fronta_feed', 'queued')",
+                    (task.type,),
+                )
             return task_id
         # Conflict with an active task of the same key: return its id, untouched.
         cur = await conn.execute(_FIND_ACTIVE_BY_KEY, {"type": task.type, "key": task.key})
@@ -454,85 +492,49 @@ async def enqueue(conn: Conn, task: NewTask, deadline_s: float = 30.0) -> int:
 # Claim and the fenced writes of a running attempt
 
 
-async def claim(  # noqa: PLR0913  # every argument is a distinct input of the claim
+async def claim(  # noqa: PLR0913  # distinct claim inputs
     conn: Conn,
     *,
     types: list[str],
     worker: str,
     lease_s: float,
     deadline_s: float,
-    lock_timeout_s: float | None = None,
-) -> TaskRow | None:
-    """Claim one eligible task or return None. Each round is one transaction.
-
-    The candidate query walks the queue index in claim order and stops at the first eligible
-    row. Limits are enforced exactly (`_within_limits`): claims of a limited type serialize on its
-    `task_types` row and recount the running tasks against the current limits; claims of an
-    unlimited type only share-lock the row, so a concurrent publish that enables a limit waits
-    for them. A candidate that lost the race is skipped for the rest of this call; the call ends
-    when no candidate is left or `deadline_s` passed.
-
-    The lease is stamped when the row is written, after any lock wait, so a returned row always
-    carries a full lease. Lock waits are bounded by `lock_timeout_s` (default: half the lease): a
-    type row held longer than that ends the call with None, and the next poll tries again.
-    """
-    skip: list[int] = []
-    deadline = time.monotonic() + deadline_s
-    lock_ms = max(1, math.ceil((lease_s / 2 if lock_timeout_s is None else lock_timeout_s) * 1000))
-    while True:
-        try:
-            async with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(_LOCK_TIMEOUT, {"timeout": f"{lock_ms}ms"})
-                await cur.execute(_CANDIDATE, {"types": types, "skip": skip})
-                rec = await cur.fetchone()
-                if rec is None:
-                    return None
-                task_id: int = rec["id"]
-                task_type: str = rec["type"]
-                if not await _within_limits(conn, task_type, rec["concurrency_key"]):
-                    skip.append(task_id)
-                    raise psycopg.Rollback
-                await cur.execute(
-                    _START,
-                    {"token": new_token(), "lease_s": lease_s, "worker": worker, "id": task_id},
-                )
-                started = await cur.fetchone()
-                if started is None:  # pragma: no cover  # impossible: the row is locked by us
-                    raise psycopg.Rollback
-                await _event(conn, task_id, task_type, State.RUNNING)
-                return _task(started)
-        except psycopg.errors.LockNotAvailable:
-            return None  # a type row held past the bound: give up this round, never a stale lease
-        if time.monotonic() > deadline:
-            return None
+    count: int,
+) -> list[TaskRow]:
+    """Claim bounded, globally ordered candidates across accepted types, skipping busy rows."""
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(
+            _CLAIM,
+            {
+                "types": types,
+                "worker": worker,
+                "lease_s": lease_s,
+                "deadline_s": deadline_s,
+                "count": count,
+            },
+            binary=True,
+        )
+        rows = [_task(rec) for rec in await cur.fetchall()]
+        return rows
 
 
-async def _within_limits(conn: Conn, task_type: str, key: str | None) -> bool:
-    params = {"type": task_type, "key": key}
-    limits = await (await conn.execute(_READ_LIMITS, params)).fetchone()
-    if limits is None:
-        return False  # unpublished meanwhile
-    if limits[0] is None and (limits[1] is None or key is None):
-        # Unlimited: a share lock keeps a concurrent publish from enabling a limit under us.
-        shared = await (await conn.execute(_SHARE_LIMITS, params)).fetchone()
-        return shared is not None and shared[0] is None and (shared[1] is None or key is None)
-    locked = await (await conn.execute(_LOCK_LIMITS, params)).fetchone()
-    if locked is None:
-        return False
-    type_limit, key_limit = locked
-    counts = await (await conn.execute(_COUNT_RUNNING, params)).fetchone()
-    by_type, by_key = (0, 0) if counts is None else (int(counts[0]), int(counts[1]))
-    if type_limit is not None and by_type >= type_limit:
-        return False
-    return key is None or key_limit is None or by_key < key_limit
-
-
-async def heartbeat(conn: Conn, task_id: int, token: UUID, lease_s: float) -> Heartbeat:
-    cur = await conn.execute(_HEARTBEAT, {"id": task_id, "token": token, "lease_s": lease_s})
-    rec = await cur.fetchone()
-    if rec is None:
-        return Heartbeat.LOST
-    return Heartbeat.ALIVE if rec[0] is None else Heartbeat.CANCEL_REQUESTED
+async def heartbeat(
+    conn: Conn,
+    renewals: list[tuple[int, UUID]],
+    lease_s: float,
+) -> dict[int, datetime | None]:
+    if len(renewals) > 1000:  # noqa: PLR2004  # bounded renewal statement
+        msg = "heartbeat batches accept at most 1000 ids"
+        raise InvalidInput(msg)
+    if not renewals:
+        return {}
+    params = {
+        "ids": [i for i, _ in renewals],
+        "tokens": [t for _, t in renewals],
+        "lease_s": lease_s,
+    }
+    rows = await (await conn.execute(_HEARTBEAT, params)).fetchall()
+    return dict(rows)
 
 
 async def set_progress(conn: Conn, task_id: int, token: UUID, progress_json: str) -> bool:
@@ -540,82 +542,94 @@ async def set_progress(conn: Conn, task_id: int, token: UUID, progress_json: str
     return cur.rowcount == 1
 
 
-async def _finish(
-    conn: Conn, query: sql.SQL | sql.Composed, params: dict[str, Any]
-) -> State | None:
-    """Run a fenced transition and emit its event in one transaction."""
-    async with conn.transaction():
-        cur = await conn.execute(query, params)
-        rec = await cur.fetchone()
-        if rec is None:
-            return None
-        task_type, state = str(rec[0]), State(rec[1])
-        await _event(conn, params["id"], task_type, state)
-        if state is State.QUEUED:
-            await _notify(conn, WAKE_CHANNEL, task_type)
-        return state
-
-
-async def succeed(conn: Conn, task_id: int, token: UUID, result_json: str) -> bool:
-    state = await _finish(conn, _SUCCEED, {"id": task_id, "token": token, "result": result_json})
-    return state is not None
-
-
-async def fail(
-    conn: Conn, task_id: int, token: UUID, error_json: str, *, retry: bool
-) -> State | None:
-    """Charge a failure. Returns the resulting state, or None when the token check failed."""
-    query = _FAIL if retry else _FAIL_FINAL
-    return await _finish(conn, query, {"id": task_id, "token": token, "error": error_json})
-
-
-async def release(conn: Conn, task_id: int, token: UUID) -> State | None:
-    """Give the task back (shutdown): queued now, or cancelled when a cancel is pending."""
-    return await _finish(conn, _RELEASE, {"id": task_id, "token": token})
-
-
-async def ack_cancel(conn: Conn, task_id: int, token: UUID) -> bool:
-    state = await _finish(conn, _ACK_CANCEL, {"id": task_id, "token": token})
-    return state is not None
+async def complete(conn: Conn, completions: list[Completion]) -> dict[int, State]:
+    """Commit a bounded batch; return only ids whose token and transition preconditions applied."""
+    if not completions:
+        return {}
+    if len(completions) > 256 or len({c.id for c in completions}) != len(completions):  # noqa: PLR2004
+        msg = "completion batches require at most 256 distinct task ids"
+        raise InvalidInput(msg)
+    params = {
+        "ids": [c.id for c in completions],
+        "tokens": [c.token for c in completions],
+        "kinds": [c.kind for c in completions],
+        "data": [c.data for c in completions],
+    }
+    records = await (await conn.execute(_COMPLETE, params)).fetchall()
+    return {task_id: State(state) for task_id, _typ, state in records}
 
 
 # ---------------------------------------------------------------------------------------------
 # Control plane
 
 
+async def release_orphans(conn: Conn, worker: str, live: list[int]) -> list[tuple[int, str, State]]:
+    rows = await (await conn.execute(_ORPHANS, {"worker": worker, "live": live})).fetchall()
+    return [(int(i), str(t), State(s)) for i, t, s in rows]
+
+
 async def request_cancel(conn: Conn, task_id: int) -> State | None:
     """Cancel a queued task at once or flag a running one. None when unknown or terminal."""
-    async with conn.transaction():
-        cur = await conn.execute(_REQUEST_CANCEL, {"id": task_id})
-        rec = await cur.fetchone()
-        if rec is None:
-            return None
-        task_type, state = str(rec[0]), State(rec[1])
-        if state is State.RUNNING:
-            await _notify(conn, CANCEL_CHANNEL, str(task_id))
-        else:
-            await _event(conn, task_id, task_type, state)
-        return state
+    rec = await (await conn.execute(_REQUEST_CANCEL, {"id": task_id})).fetchone()
+    return None if rec is None else State(rec[1])
 
 
 async def reap(conn: Conn, limit: int = 100) -> list[tuple[int, str, State]]:
-    """Requeue, fail or cancel running tasks whose lease expired."""
-    async with conn.transaction():
-        cur = await conn.execute(_REAP, {"limit": limit})
-        rows = [(int(r[0]), str(r[1]), State(r[2])) for r in await cur.fetchall()]
-        if rows:
-            for task_id, task_type, state in rows:
-                await _event(conn, task_id, task_type, state)
-            for task_type in {r[1] for r in rows if r[2] is State.QUEUED}:
-                await _notify(conn, WAKE_CHANNEL, task_type)
-        return rows
+    records = await (await conn.execute(_REAP, {"limit": limit})).fetchall()
+    return [(int(i), str(t), State(s)) for i, t, s in records]
+
+
+async def set_paused(conn: Conn, task_type: str, paused: bool) -> None:
+    check_name(task_type)
+    cur = await conn.execute(
+        "UPDATE fronta.task_types SET paused = %s WHERE name = %s", (paused, task_type)
+    )
+    if cur.rowcount == 0:
+        raise UnknownTaskType(f"unknown task type {task_type!r}")
+
+
+async def requeue(conn: Conn, task_id: int) -> str:
+    try:
+        row = await (await conn.execute(_REQUEUE, {"id": task_id})).fetchone()
+    except psycopg.errors.UniqueViolation as exc:
+        raise NotRequeueable(f"task {task_id} has an active duplicate") from exc
+    if row is not None:
+        return str(row[0])
+    task = await get_task(conn, task_id)
+    if task is None:
+        raise TaskNotFound(f"no task {task_id}")
+    raise NotRequeueable(
+        f"task {task_id} is {task.state.value}; only failed or cancelled tasks can be requeued"
+    )
+
+
+async def stats(conn: Conn) -> dict[str, Any]:
+    row = await (await conn.execute(_STATS)).fetchone()
+    assert row is not None  # noqa: S101  # SELECT always returns one JSON object
+    return dict(row[0])
 
 
 async def purge_tasks(conn: Conn, retention_s: float, batch: int) -> int:
-    """Delete one batch of terminal tasks older than the retention. Returns the rows deleted."""
-    async with conn.transaction():
-        cur = await conn.execute(_PURGE_TASKS, {"retention_s": retention_s, "batch": batch})
-        return cur.rowcount
+    cur = await conn.execute(_PURGE_TASKS, {"retention_s": retention_s, "batch": batch})
+    return cur.rowcount
+
+
+async def purge_events(conn: Conn, retention_s: float, batch: int) -> list[tuple[str, int]]:
+    rows = await (
+        await conn.execute(
+            """
+        WITH deleted AS (
+            DELETE FROM fronta.events WHERE (subscription, seq) IN (
+                SELECT subscription, seq FROM fronta.events
+                WHERE created_at < now() - make_interval(secs => %s)
+                LIMIT %s FOR UPDATE SKIP LOCKED)
+            RETURNING subscription)
+        SELECT subscription, count(*) FROM deleted GROUP BY subscription
+    """,
+            (retention_s, batch),
+        )
+    ).fetchall()
+    return [(str(name), int(count)) for name, count in rows]
 
 
 # ---------------------------------------------------------------------------------------------

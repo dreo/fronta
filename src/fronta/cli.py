@@ -13,14 +13,14 @@ import click
 import psycopg
 from pydantic import ValidationError
 
-from fronta import store
+from fronta import runtime, store
 from fronta.config import Settings
 from fronta.errors import ConfigurationError
 from fronta.worker import Worker
 
 log = logging.getLogger(__name__)
 
-SERVER_EXTRA_MODULES = frozenset({"fastapi", "starlette", "uvicorn", "mcp", "jsonschema"})
+SERVER_EXTRA_MODULES = frozenset({"fastapi", "starlette", "uvicorn", "mcp"})
 """Top-level modules provided by the `server` extra."""
 
 
@@ -72,18 +72,38 @@ def db() -> None:
 
 @db.command("init")
 @click.option("--dsn", envvar="FRONTA_DSN", required=True, help="PostgreSQL DSN (or FRONTA_DSN).")
-def db_init(dsn: str) -> None:
+@click.option("--prune", is_flag=True, help="Drop older claim functions after their workers stop.")
+@click.option(
+    "--timeout",
+    default=300.0,
+    type=click.FloatRange(min=0.001),
+    envvar="FRONTA_STATEMENT_TIMEOUT_S",
+    show_default=True,
+    help="Seconds allowed for schema initialization, including lock waits.",
+)
+def db_init(dsn: str, prune: bool, timeout: float) -> None:
     """Create the `fronta` schema (idempotent)."""
 
     async def run() -> None:
-        async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
-            await store.init_schema(conn)
+        settings = Settings(dsn=dsn, statement_timeout_s=timeout)  # type: ignore[call-arg]  # Field defaults
+        async with await psycopg.AsyncConnection.connect(
+            dsn, **runtime.connection_kwargs(settings, "fronta-init")
+        ) as conn:
+            await store.init_schema(conn, prune=prune)
 
     try:
         asyncio.run(run())
+    except ValidationError as exc:
+        raise click.ClickException(f"invalid settings: {exc}") from exc
     except psycopg.Error as exc:
         raise click.ClickException(f"database error: {exc}") from exc
     click.echo("fronta schema is ready")
+
+
+@db.command("sql")
+def db_sql() -> None:
+    """Print the complete, transactional schema DDL for a database administrator."""
+    click.echo("BEGIN;\n" + store.schema_sql() + "COMMIT;")
 
 
 @main.command()
@@ -132,5 +152,7 @@ def server(host: str | None, port: int | None) -> None:
         raise click.ClickException(f"invalid settings: {exc}") from exc
     try:
         serve(settings)
+    except (psycopg.OperationalError, TimeoutError) as exc:
+        raise click.ClickException(f"database unavailable: {exc}") from exc
     except ConfigurationError as exc:
         raise click.ClickException(str(exc)) from exc

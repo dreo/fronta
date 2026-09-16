@@ -469,7 +469,7 @@ async def test_a_crashed_runner_has_its_sandbox_killed_before_the_outcome_is_wri
 ):
     """Even with the database down, a crashed runner's sandbox dies at once, not after the retry."""
     original_run = sandbox.SandboxProcess.run
-    original_fail = store.fail
+    original_fail = store.complete
     gate = {"open": False, "calls": 0}
 
     async def crash(self, stdin, max_output):
@@ -487,7 +487,7 @@ async def test_a_crashed_runner_has_its_sandbox_killed_before_the_outcome_is_wri
         return await original_fail(*args, **kwargs)
 
     monkeypatch.setattr(sandbox.SandboxProcess, "run", crash)
-    monkeypatch.setattr(store, "fail", gated_fail)
+    monkeypatch.setattr(store, "complete", gated_fail)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 0.1)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 0.1)
     sleeper = script("sleeper3", "sleep 600", attempt_timeout=600, max_attempts=1)
@@ -509,7 +509,7 @@ async def test_an_unverified_kill_blocks_the_outcome_until_the_sandbox_is_verifi
 ):
     """While `kill()` reports False the sandbox is really alive: no outcome, no free slot."""
     original_kill = sandbox.SandboxProcess.kill
-    original_fail = store.fail
+    original_fail = store.complete
     state = {"refusals": 3, "fail_calls": 0, "alive_at_refusal": []}
 
     async def refusing_kill(self, timeout_s):
@@ -532,7 +532,7 @@ async def test_an_unverified_kill_blocks_the_outcome_until_the_sandbox_is_verifi
         return await original_fail(*args, **kwargs)
 
     monkeypatch.setattr(sandbox.SandboxProcess, "kill", refusing_kill)
-    monkeypatch.setattr(store, "fail", counting_fail)
+    monkeypatch.setattr(store, "complete", counting_fail)
     lingering = script("lingering", "trap '' TERM; sleep 600", attempt_timeout=1, max_attempts=1)
     async with run_worker(Worker([lingering], settings=settings)):
         task_id = await store.enqueue(conn, _new_task(lingering, In()))
