@@ -3,9 +3,53 @@
 All notable changes to Fronta are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/). Pre-1.0, minor versions may change the schema and the
-contracts (there is no migration tooling yet: run `fronta db init` on a fresh schema).
+contracts; follow each release's database initialization instructions.
 
-## Unreleased
+## [0.5.0] - 2026-09-16
+
+### Added
+
+- Durable named event subscriptions, competing consumers and delete-on-ack batches. Database
+  reactions on `batch.conn` commit atomically with acknowledgements.
+- SDK, REST and MCP pause/resume, failed/cancelled task requeue, queue/subscription statistics,
+  and JSON task metadata.
+- Versioned claim functions, schema checks at startup, `fronta db sql` and `db init --prune`.
+
+### Changed
+
+- PostgreSQL 18 is the default; PostgreSQL 16+ and Python 3.12–3.14 remain supported.
+- Automatic bounded claim/completion batches, worker-wide batched renewals through a reserved
+  connection, and coalesced post-commit hints. Task writes and feed acknowledgements stay durable.
+- One claim path handles single/multiple types, skips busy rows and enforces published limits.
+  Candidate searches skip locked rows while scanning, reducing repeated work under contention.
+- Idle polling adapts from 50 ms to a one-second ceiling (previous default: five seconds).
+- Declared results are serialized by alias and checked against their published serialization
+  schema. The existing `jsonschema` dependency is now included in the base install.
+- `db init` defaults to a five-minute deadline; `--timeout` or `FRONTA_STATEMENT_TIMEOUT_S`
+  overrides it. Configuration and schema errors are reported clearly by both CLI entrypoints.
+
+### Fixed
+
+- Delayed cancellation hints cannot stop a newer attempt. Cancellation is confirmed durably
+  using that attempt's execution token.
+- Completion, orphan-release and renewal batches lock tasks consistently to avoid deadlocks;
+  expired attempts no longer consume healthy attempts' renewal budgets.
+- Completion batches keep indexed task lookups when database state statistics are stale.
+- Repeated worker cancellation waits for asyncio handler cleanup before releasing resources.
+  Persistent sandbox process handles verify ownership before they can be signalled.
+- Subscription deletion no longer takes a global exclusive table lock. It waits only on matching
+  publishers/deliveries and prevents stale readers from inserting events after removal.
+- Invalid task names, Boolean priorities and excessively nested API input return validation
+  errors. HTTP/MCP body limits include the configured metadata allowance.
+- Caller-owned enqueue transactions notify both workers and feed consumers after commit.
+- Event expiry checks use a timestamp index, avoiding full scans of unexpired feed backlogs.
+
+### Upgrade
+
+`subscribe_events()` is replaced by `subscribe(name)` with explicit batch acknowledgements.
+Pause producers, gracefully stop 0.4.x workers, install this version, run `fronta db init`, then
+restart connections and the fleet. Use this pause for the initial schema change. See the complete
+[upgrade instructions](docs/reference.md#database-initialization-and-upgrades).
 
 ## [0.4.0] - 2026-09-05
 

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from fronta import Settings, State, Worker, store, task
+from fronta import Settings, State, Worker, runtime, store, task
 from tests.conftest import FAST, wait_until
 from tests.workers import In, sleep_task
 
@@ -28,7 +28,10 @@ async def test_queued_task_is_cancelled_at_once(conn):
     assert row.finished_at is not None
     assert row.cancel_requested_at is not None
     assert row.attempt == 0
-    assert await store.claim(conn, types=["sleep"], worker="w", lease_s=30, deadline_s=1) is None
+    assert (
+        await store.claim(conn, types=["sleep"], worker="w", lease_s=30, deadline_s=1, count=1)
+        or [None]
+    )[0] is None
 
 
 @pytest.mark.usefixtures("sdk")
@@ -68,6 +71,7 @@ async def test_cancel_arrives_through_notify_while_heartbeats_are_disabled(conn,
         task_id = await sleep_task.enqueue(In(sleep_s=60))
         await wait_until(lambda: _state(conn, task_id, State.RUNNING))
         await store.request_cancel(conn, task_id)
+        runtime.hints(slow_beats).cancel([task_id])
         await wait_until(lambda: _state(conn, task_id, State.CANCELLED), timeout=5)
 
 
@@ -85,6 +89,40 @@ async def test_cancel_arrives_through_the_heartbeat_when_notifications_are_misse
         await wait_until(
             lambda: _state(conn, task_id, State.CANCELLED), timeout=settings.heartbeat_s + 5
         )
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_delayed_cancel_hint_does_not_stop_a_requeued_attempt(conn, settings, run_worker):
+    second_started, finish = asyncio.Event(), asyncio.Event()
+
+    @task("cancel_then_requeue", input=In)
+    async def handler(ctx, inp):
+        del inp
+        if ctx.attempt == 2:
+            second_started.set()
+        await finish.wait()
+        return "done"
+
+    async with run_worker(Worker([handler], settings=settings)) as worker:
+        task_id = await handler.enqueue(In())
+        await wait_until(lambda: _state(conn, task_id, State.RUNNING))
+        await store.request_cancel(conn, task_id)
+        await wait_until(lambda: _state(conn, task_id, State.CANCELLED))
+        await store.requeue(conn, task_id)
+        await asyncio.wait_for(second_started.wait(), 5)
+        attempt = worker.attempts[task_id]
+        renewed = attempt._renewed_at
+        worker._on_notify(store.CANCEL_CHANNEL, str(task_id))
+
+        async def checked():
+            return attempt._renewed_at > renewed or attempt.cause is not None
+
+        await wait_until(checked)
+        assert attempt.cause is None
+        finish.set()
+        await wait_until(lambda: _state(conn, task_id, State.SUCCEEDED))
+    row = await get(conn, task_id)
+    assert (row.attempt, row.failures, row.result) == (2, 0, "done")
 
 
 @pytest.mark.usefixtures("sdk")

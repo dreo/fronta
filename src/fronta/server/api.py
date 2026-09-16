@@ -9,8 +9,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from fronta.model import State, TaskFilter
-from fronta.server.service import Service, summary_to_dict, task_to_dict, task_type_to_dict
+from fronta.model import JSON, State, TaskFilter
+from fronta.server.service import Service, task_to_dict, task_type_to_dict
 from fronta.store import MAX_PRIORITY, MIN_PRIORITY
 
 
@@ -45,10 +45,11 @@ router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_auth)])
 class EnqueueRequest(BaseModel):
     type: str = Field(min_length=1, max_length=255)
     input: dict[str, Any]
-    priority: int = Field(0, ge=MIN_PRIORITY, le=MAX_PRIORITY)
+    priority: int = Field(0, strict=True, ge=MIN_PRIORITY, le=MAX_PRIORITY)
     run_at: datetime | None = None
     key: str | None = Field(None, min_length=1, max_length=1024)
     concurrency_key: str | None = Field(None, min_length=1, max_length=1024)
+    metadata: JSON = None
 
 
 @router.get("/task-types")
@@ -69,6 +70,7 @@ async def enqueue(
         run_at=body.run_at,
         key=body.key,
         concurrency_key=body.concurrency_key,
+        metadata=body.metadata,
     )
     return {"id": task_id}
 
@@ -84,24 +86,47 @@ async def get_task(
 async def list_tasks(  # noqa: PLR0913  # the filters, as specified
     *,
     service: Annotated[Service, Depends(get_service)],
-    request: Request,
     type: Annotated[str | None, Query(alias="type")] = None,
     state: State | None = None,
     key: str | None = None,
     before: int | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    settings = request.app.state.settings
+    settings = service.settings
     page = settings.list_page_size if limit is None else limit
-    items = await service.list_tasks(TaskFilter(type, state, key, before, page))
-    page = min(max(page, 1), settings.list_page_max)
-    return {
-        "items": [summary_to_dict(row) for row in items],
-        "next": items[-1].id if len(items) == page else None,
-    }
+    return await service.list_tasks(TaskFilter(type, state, key, before, page))
 
 
 @router.post("/tasks/{task_id}/cancel")
 async def cancel(task_id: int, service: Annotated[Service, Depends(get_service)]) -> dict[str, Any]:
     state = await service.cancel(task_id)
     return {"id": task_id, "state": state.value}
+
+
+@router.post("/task-types/{task_type:path}/pause")
+async def pause(
+    task_type: str, service: Annotated[Service, Depends(get_service)]
+) -> dict[str, bool]:
+    await service.pause(task_type)
+    return {"paused": True}
+
+
+@router.post("/task-types/{task_type:path}/resume")
+async def resume(
+    task_type: str, service: Annotated[Service, Depends(get_service)]
+) -> dict[str, bool]:
+    await service.resume(task_type)
+    return {"paused": False}
+
+
+@router.post("/tasks/{task_id}/requeue")
+async def requeue(
+    task_id: int, service: Annotated[Service, Depends(get_service)]
+) -> dict[str, Any]:
+    await service.requeue(task_id)
+    return {"id": task_id, "state": "queued"}
+
+
+@router.get("/stats")
+async def stats(service: Annotated[Service, Depends(get_service)]) -> dict[str, Any]:
+    return await service.stats()

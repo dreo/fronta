@@ -20,7 +20,7 @@ from fronta import (
     store,
     task,
 )
-from fronta.model import NewTask, Policy, TaskTypeSpec
+from fronta.model import Completion, NewTask, Policy, TaskTypeSpec
 from tests.conftest import FAST, wait_until
 from tests.workers import In, sleep_task
 
@@ -174,10 +174,15 @@ async def test_dedupe_returns_the_existing_id_while_active_and_a_new_one_after_t
     await publish(conn, sleep_task)
     first = await sleep_task.enqueue(In(n=1), key="k")
     assert await sleep_task.enqueue(In(n=2), key="k") == first
-    row = await store.claim(conn, types=["sleep"], worker="w", lease_s=30, deadline_s=1)
+    row = (
+        await store.claim(conn, types=["sleep"], worker="w", lease_s=30, deadline_s=1, count=1)
+        or [None]
+    )[0]
     assert row is not None
     assert await sleep_task.enqueue(In(n=3), key="k") == first  # running still dedupes
-    assert await store.succeed(conn, first, row.token, "null")
+    assert (await store.complete(conn, [Completion(first, row.token, "succeed", "null")])).get(
+        first
+    )
     second = await sleep_task.enqueue(In(n=4), key="k")
     assert second != first
 

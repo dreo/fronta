@@ -30,14 +30,17 @@ jobs:
       matrix:
         python: ["3.12", "3.13", "3.14"]
         resolution: [highest]
+        postgres: ["18"]
         include:
           # `lowest-direct` installs the declared lower bounds of every direct dependency, so the
-          # bounds in pyproject.toml are proven, not guessed.
+          # bounds in pyproject.toml are proven, not guessed. Also cover the oldest supported
+          # PostgreSQL; normal development and the full gate use PostgreSQL 18.
           - python: "3.12"
             resolution: lowest-direct
+            postgres: "16"
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_USER: fronta
           POSTGRES_PASSWORD: fronta
@@ -125,12 +128,12 @@ jobs:
         with:
           version: "0.11.18"
           python-version: "3.13"
-      # GitHub service containers require Linux. Use Homebrew's keg-only PostgreSQL 16 in an
+      # GitHub service containers require Linux. Use Homebrew's keg-only PostgreSQL 18 in an
       # isolated cluster instead of relying on whichever database a runner image may include.
-      - name: Start PostgreSQL 16
+      - name: Start PostgreSQL 18
         run: |
-          brew install postgresql@16
-          pg_bin="$(brew --prefix postgresql@16)/bin"
+          brew install postgresql@18
+          pg_bin="$(brew --prefix postgresql@18)/bin"
           pg_data="${RUNNER_TEMP}/fronta-pg"
           echo "${pg_bin}" >> "${GITHUB_PATH}"
           "${pg_bin}/initdb" -D "${pg_data}" --username=fronta --auth=trust

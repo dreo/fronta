@@ -1,0 +1,62 @@
+[
+  {
+    "name": "defaults",
+    "workers": 8,
+    "jobs": 50000,
+    "gate": "publish"
+  },
+  {
+    "name": "single-type",
+    "workers": 8,
+    "concurrency": 256,
+    "jobs": 300000,
+    "gate": "publish"
+  },
+  {
+    "name": "multi-type",
+    "workers": 8,
+    "concurrency": 256,
+    "types": [
+      "stress_a",
+      "stress_b",
+      "stress_c"
+    ],
+    "jobs": 300000,
+    "gate": "publish"
+  },
+  {
+    "name": "live",
+    "workers": 8,
+    "concurrency": 256,
+    "producers": 4,
+    "clients": 8,
+    "jobs": 50000,
+    "live_enqueue": true
+  },
+  {
+    "name": "feed",
+    "workers": 8,
+    "concurrency": 256,
+    "producers": 4,
+    "clients": 8,
+    "jobs": 50000,
+    "live_enqueue": true,
+    "subscription": true
+  },
+  {
+    "name": "feed-drain",
+    "workers": 8,
+    "concurrency": 256,
+    "jobs": 300000,
+    "gate": "publish",
+    "subscription": true
+  },
+  {
+    "name": "payload",
+    "workers": 4,
+    "concurrency": 256,
+    "jobs": 2000,
+    "payload_bytes": 524288,
+    "gate": "publish"
+  }
+]

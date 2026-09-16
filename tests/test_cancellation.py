@@ -5,13 +5,14 @@ runner, heartbeat, listener, reaper, purger, tick task or watchdog thread outliv
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import threading
 
 import psycopg
 import pytest
 
-from fronta import State, Worker, sandbox, store
+from fronta import State, Worker, sandbox, store, task
 from fronta import worker as worker_module
 from fronta.model import NewTask
 from fronta.worker import EXIT_LOOP_FAILED
@@ -21,7 +22,7 @@ from tests.workers import In, long_proc, sleep_task
 requires_linux = pytest.mark.skipif(
     sys.platform != "linux", reason="sandbox process management requires Linux"
 )
-WORKER_TASKS = ("attempt-", "heartbeat-", "run-", "stop-", "tick", "listener", "reaper", "purger")
+WORKER_TASKS = ("attempt-", "renewals", "run-", "stop-", "tick", "listener", "reaper", "purger")
 
 
 def live_worker_tasks() -> list[str]:
@@ -97,7 +98,7 @@ async def test_cancelling_run_abandons_a_transition_stuck_on_an_outage(
         msg = "simulated outage"
         raise psycopg.OperationalError(msg)
 
-    monkeypatch.setattr(store, "succeed", down)
+    monkeypatch.setattr(store, "complete", down)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 0.1)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 0.1)
     worker = Worker([sleep_task], settings=settings)
@@ -118,7 +119,7 @@ async def test_a_repeated_cancellation_still_ends_every_task(conn, settings, mon
         msg = "simulated outage"
         raise psycopg.OperationalError(msg)
 
-    monkeypatch.setattr(store, "release", down)
+    monkeypatch.setattr(store, "complete", down)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_S", 0.1)
     monkeypatch.setattr(worker_module, "_TRANSITION_RETRY_MAX_S", 0.1)
     worker = Worker([sleep_task], settings=settings)
@@ -134,6 +135,47 @@ async def test_a_repeated_cancellation_still_ends_every_task(conn, settings, mon
     assert live_worker_tasks() == []
     assert worker.attempts == {}
     assert (await _row(conn, task_id)).state is State.RUNNING  # left to the reaper
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_repeated_cancellation_awaits_the_handlers_async_cleanup(settings):
+    started, cleaning, finish, cleaned = (asyncio.Event() for _ in range(4))
+
+    @task("async_cleanup", input=In)
+    async def handler(ctx, inp):
+        del ctx, inp
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await finish.wait()
+            cleaned.set()
+
+    @contextlib.asynccontextmanager
+    async def lifespan(worker):
+        yield None
+        assert cleaned.is_set()
+        assert worker._pool is not None
+
+    worker = Worker([handler], settings=settings, lifespan=lifespan)
+    run = await _started(worker)
+    await handler.enqueue(In())
+    await asyncio.wait_for(started.wait(), 5)
+    run.cancel()
+    await asyncio.wait_for(cleaning.wait(), 5)
+    run.cancel()
+    await asyncio.sleep(0.05)
+    run.cancel()  # cancellation must not interrupt the final ownership cleanup either
+    assert not run.done()
+    assert worker._pool is not None
+    finish.set()
+    await asyncio.wait({run}, timeout=10)
+    assert run.cancelled()
+    assert cleaned.is_set()
+    assert live_worker_tasks() == []
+    assert not worker.attempts
+    assert worker._pool is None
 
 
 @pytest.mark.usefixtures("sdk")

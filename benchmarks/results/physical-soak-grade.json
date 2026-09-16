@@ -1,0 +1,128 @@
+{
+  "acceptance_version": "sustained-load-v2",
+  "checks": {
+    "accounting": true,
+    "producer_rate": true,
+    "completion_rate": true,
+    "completion_windows": false,
+    "backlog": true,
+    "retention": true,
+    "storage_plateau": true,
+    "open_transaction": true
+  },
+  "sustainability": {
+    "completion_tasks_per_s": 2999.8991608315723,
+    "completion_windows": [
+      {
+        "begin_s": 0,
+        "end_s": 1200.2438760199984,
+        "tasks_per_s": 2998.771392973164
+      },
+      {
+        "begin_s": 1200.2438760199984,
+        "end_s": 2400.339389457,
+        "tasks_per_s": 3000.0228812529404
+      },
+      {
+        "begin_s": 2400.339389457,
+        "end_s": 3600.2911605869995,
+        "tasks_per_s": 2999.9130686811686
+      },
+      {
+        "begin_s": 3600.2911605869995,
+        "end_s": 4800.241476968,
+        "tasks_per_s": 649.4477224276677
+      },
+      {
+        "begin_s": 4800.241476968,
+        "end_s": 6000.420672988999,
+        "tasks_per_s": 3207.868468945396
+      },
+      {
+        "begin_s": 6000.420672988999,
+        "end_s": 7200.267908156999,
+        "tasks_per_s": 5142.748859304595
+      },
+      {
+        "begin_s": 7200.267908156999,
+        "end_s": 8400.404713246,
+        "tasks_per_s": 3000.097142869464
+      },
+      {
+        "begin_s": 8400.404713246,
+        "end_s": 9600.397563335999,
+        "tasks_per_s": 3000.1187088156344
+      },
+      {
+        "begin_s": 9600.397563335999,
+        "end_s": 10800.238154592997,
+        "tasks_per_s": 3000.0426941956953
+      }
+    ],
+    "backlog": {
+      "pre_transaction_median": 835.0,
+      "recovery_median": 888.0,
+      "final_median": 923,
+      "allowance_tasks": 2336
+    },
+    "storage": {
+      "tasks": {
+        "early_max_bytes": 6082936832,
+        "late_max_bytes": 6082936832
+      },
+      "events": {
+        "early_max_bytes": 187146240,
+        "late_max_bytes": 187146240
+      }
+    },
+    "storage_growth_tolerance_fraction": 0.01,
+    "oldest_terminal_age_s": 1202.374511,
+    "cleanup_age_limit_s": 1344.0
+  },
+  "passed": false,
+  "graded_at": "2026-09-16T05:07:33.838949+00:00",
+  "report": "simplification-sustain-perpetron-3h.json",
+  "report_sha256": "d2b4d7f29eb31d76a871a4c35cbf59ace65f8a9cb693ef035265eb31c647c6ad",
+  "measurement_acceptance_version": "sustained-load-v1",
+  "raw_checks": {
+    "accounting": true,
+    "producer_rate": true,
+    "completion_rate": true,
+    "completion_windows": false,
+    "backlog": true,
+    "retention": true,
+    "storage_plateau": true,
+    "open_transaction": true
+  },
+  "raw_passed": false,
+  "source_sha256": "afbd72f512a2fdf5aa7725209c0fb2109c1da70144c7922e7a9857865932785a",
+  "criteria": "simplification-sustain-criteria-v2.json",
+  "criteria_sha256": "48604a24f94f4debcc185c9d470932c81f57f458a2a13cd8e5cd32abdc10ea0e",
+  "grading_archive_sha256": "5177ddd252e46f7872b39b9c5b2e813a4cab63b6bd9f53e05c6e48b61601deb3",
+  "identity": {
+    "count": 32400000,
+    "sum": 524880016200000,
+    "xor": 265192499237823380253052732301830197596
+  },
+  "received_terminal_identity": {
+    "count": 32400000,
+    "sum": 524880016200000,
+    "xor": 265192499237823380253052732301830197596
+  },
+  "worker_exit_codes": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "producer_tasks_per_s": 2999.9924030417374,
+  "elapsed_s": 10800.363033208996,
+  "open_transaction": {
+    "begin_s": 3600.006191916,
+    "end_s": 5400.010889263998
+  }
+}

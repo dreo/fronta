@@ -57,3 +57,7 @@ class InvalidInput(FrontaError, ValueError):
 
 class SandboxError(FrontaError):
     """The sandbox cannot be set up on this host (probe failed) or a spawn failed."""
+
+
+class NotRequeueable(FrontaError):
+    """The task is not failed/cancelled, or its dedupe key is occupied by an active task."""

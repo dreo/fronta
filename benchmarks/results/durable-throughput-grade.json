@@ -1,0 +1,93 @@
+{
+  "grading_version": "durable-throughput-v2",
+  "source_sha256": "8b3fb5405fd8979aa9d80c216f81ca3f155dcf091f8126f4596229ece70440bd",
+  "durability": {
+    "fsync": true,
+    "synchronous_commit": true,
+    "full_page_writes": true
+  },
+  "summary": {
+    "defaults": {
+      "runs": 3,
+      "median_tasks_per_s": 11639.994184900816,
+      "range_tasks_per_s": [
+        11083.124271703731,
+        11916.489361885202
+      ]
+    },
+    "single-type": {
+      "runs": 3,
+      "median_tasks_per_s": 58149.52792546141,
+      "range_tasks_per_s": [
+        58145.56306796107,
+        59197.55056366065
+      ]
+    },
+    "multi-type": {
+      "runs": 3,
+      "median_tasks_per_s": 51736.78519320061,
+      "range_tasks_per_s": [
+        43488.94559941354,
+        55435.16713568092
+      ]
+    },
+    "live": {
+      "runs": 3,
+      "median_tasks_per_s": 5738.616464296287,
+      "range_tasks_per_s": [
+        5619.723746720901,
+        5793.966130354003
+      ]
+    },
+    "feed": {
+      "runs": 3,
+      "median_tasks_per_s": 5439.71565209423,
+      "range_tasks_per_s": [
+        5184.204730594093,
+        5596.92875249467
+      ]
+    },
+    "payload": {
+      "runs": 3,
+      "median_tasks_per_s": 332.47672323385433,
+      "range_tasks_per_s": [
+        316.9915536183551,
+        332.84105913089377
+      ]
+    },
+    "feed-drain": {
+      "runs": 3,
+      "median_tasks_per_s": 37361.667450144094,
+      "range_tasks_per_s": [
+        37142.51126332746,
+        39744.634539194194
+      ]
+    }
+  },
+  "ratios": {
+    "multi_to_single": 0.8897197800043892,
+    "feed_to_live": 0.9479141332999486
+  },
+  "worst_feed_p99_ms": 36.327999999999996,
+  "worst_payload_rss_bytes": 294699008,
+  "worst_payload_p99_ms": 27.159269999999996,
+  "payload_limits": {
+    "rss_bytes": 628094976.0,
+    "p99_ms": 113.93527999999999
+  },
+  "worst_feed_drain_fsync_per_task": 0.010633333333333333,
+  "worst_feed_drain_object_wait_fraction": 0.0,
+  "checks": {
+    "defaults": true,
+    "single-type": true,
+    "multi-type": true,
+    "live": true,
+    "feed-throughput": true,
+    "feed-lag": true,
+    "payload-rss": true,
+    "payload-p99": true,
+    "feed-drain-fsync": true,
+    "feed-drain-object-waits": true
+  },
+  "passed": true
+}

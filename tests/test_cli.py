@@ -9,3 +9,11 @@ def test_cli_reports_version() -> None:
 
     assert result.exit_code == 0
     assert result.output == f"fronta, version {__version__}\n"
+
+
+def test_db_init_reports_invalid_settings_without_a_traceback(monkeypatch):
+    monkeypatch.setenv("FRONTA_CONCURRENCY", "invalid")
+    result = CliRunner().invoke(main, ["db", "init", "--dsn", "postgresql:///unused"])
+    assert result.exit_code == 1
+    assert "invalid settings" in result.output
+    assert "Traceback" not in result.output

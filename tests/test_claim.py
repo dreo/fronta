@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
 
-from fronta import Settings, State, Worker, store
-from fronta.model import NewTask, Policy
+from fronta import Settings, State, Worker, codec, store
+from fronta.model import Completion, NewTask, Policy
 from tests import workers
 from tests.conftest import FAST, running_all, wait_until
-from tests.workers import In, fail_task, sleep_task
+from tests.workers import In, fail_task, limited_task, sleep_task
 
 
 async def publish(conn, *definitions):
@@ -21,7 +22,10 @@ async def publish(conn, *definitions):
 
 
 async def claim(conn, *types):
-    return await store.claim(conn, types=list(types), worker="w", lease_s=30, deadline_s=1)
+    return (
+        await store.claim(conn, types=list(types), worker="w", lease_s=30, deadline_s=1, count=1)
+        or [None]
+    )[0]
 
 
 @pytest.mark.usefixtures("sdk")
@@ -68,7 +72,9 @@ async def test_claim_issues_a_fresh_token_and_increments_attempt(conn):
     assert first.token is not None
     assert first.lease_until is not None
     assert first.worker == "w"
-    assert await store.release(conn, task_id, first.token) is State.QUEUED
+    assert (await store.complete(conn, [Completion(task_id, first.token, "release")])).get(
+        task_id
+    ) is State.QUEUED
     second = await claim(conn, "sleep")
     assert second.attempt == 2
     assert second.token != first.token
@@ -128,3 +134,102 @@ async def _all_in(conn, ids, state):
         "SELECT count(*) FROM fronta.tasks WHERE id = ANY(%s) AND state = %s", (ids, state.value)
     )
     return (await cur.fetchone())[0] == len(ids)
+
+
+# Folded batch regressions
+
+
+async def batch_claims(conn, count=16, types=None):
+    return await store.claim(
+        conn, types=types or ["sleep"], worker="batch", lease_s=30, deadline_s=1, count=count
+    )
+
+
+async def batch_seed(conn, definition=sleep_task, count=16):
+    await store.publish_task_type(conn, definition.spec)
+    return [
+        await store.enqueue(conn, NewTask(definition.name, "{}", Policy(max_attempts=2)))
+        for _ in range(count)
+    ]
+
+
+async def batch_all_done(conn, ids):
+    rows = await (
+        await conn.execute(
+            "SELECT count(*) FROM fronta.tasks WHERE id=ANY(%s) AND state='succeeded'", (ids,)
+        )
+    ).fetchone()
+    return rows[0] == len(ids)
+
+
+@pytest.mark.parametrize("priorities", [[3, 2, 1, 0], [0, 0, 0, 0]])
+async def test_multiple_types_merge_global_order_and_skip_locked_heads(conn, dsn, priorities):
+    for definition in (sleep_task, limited_task):
+        await store.publish_task_type(conn, definition.spec)
+    due = datetime.now(UTC) - timedelta(seconds=1)
+    ids = [
+        await store.enqueue(conn, NewTask(ty, "{}", Policy(), priority=priority, run_at=due))
+        for ty, priority in zip(["sleep", "limited", "sleep", "limited"], priorities, strict=True)
+    ]
+    async with await psycopg.AsyncConnection.connect(dsn) as holder:
+        await holder.execute("SELECT id FROM fronta.tasks WHERE id = %s FOR UPDATE", (ids[0],))
+        first = await batch_claims(conn, types=["limited", "sleep"])
+        assert [r.id for r in first] == ids[1:]
+    assert [r.id for r in await batch_claims(conn, types=["limited", "sleep"])] == [ids[0]]
+
+
+async def test_claim_byte_budget_admits_at_least_one_and_bounds_large_batches(conn):
+
+    await store.publish_task_type(conn, sleep_task.spec)
+    # Disable TOAST compression to measure the actual stored byte budget deterministically.
+    await conn.execute("ALTER TABLE fronta.tasks ALTER COLUMN input SET STORAGE EXTERNAL")
+    try:
+        payload = codec.encode({"n": 1, "data": secrets.token_hex(100 * 1024)})
+        for _ in range(32):
+            await store.enqueue(conn, NewTask("sleep", payload, Policy()))
+        rows = await store.claim(
+            conn, types=["sleep"], worker="bytes", lease_s=30, deadline_s=2, count=256
+        )
+        assert len(rows) == 2
+        total = (
+            await (
+                await conn.execute(
+                    "SELECT sum(pg_column_size(input)) FROM fronta.tasks WHERE id=ANY(%s)",
+                    ([r.id for r in rows],),
+                )
+            ).fetchone()
+        )[0]
+        assert total <= 512 * 1024
+        await conn.execute("TRUNCATE fronta.tasks")
+        task_id = await store.enqueue(
+            conn, NewTask("sleep", codec.encode({"data": "x" * (9 * 1024 * 1024)}), Policy())
+        )
+        rows = await store.claim(
+            conn, types=["sleep"], worker="bytes", lease_s=30, deadline_s=2, count=256
+        )
+        assert [r.id for r in rows] == [task_id]
+    finally:
+        await conn.execute("ALTER TABLE fronta.tasks ALTER COLUMN input SET STORAGE EXTENDED")
+
+
+async def test_batch_claim_refills_past_a_fully_locked_head_in_priority_order(conn, dsn):
+    await batch_seed(conn, count=600)
+    await conn.execute("UPDATE fronta.tasks SET priority = id % 7")
+    ordered = [
+        row[0]
+        for row in await (
+            await conn.execute("SELECT id FROM fronta.tasks ORDER BY priority DESC, run_at, id")
+        ).fetchall()
+    ]
+    # Busy candidates must still advance the search, even when the entire head is locked.
+    async with await psycopg.AsyncConnection.connect(dsn) as holder:
+        await holder.execute(
+            "SELECT id FROM fronta.tasks WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
+            (ordered[:256],),
+        )
+        first = await asyncio.wait_for(batch_claims(conn, count=256), 2)
+        second = await asyncio.wait_for(batch_claims(conn, count=256), 2)
+        assert [row.id for row in first] == ordered[256:512]
+        assert [row.id for row in second] == ordered[512:]
+        assert await batch_claims(conn, count=256) == []
+    assert [row.id for row in await batch_claims(conn, count=256)] == ordered[:256]

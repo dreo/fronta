@@ -11,10 +11,12 @@ import pytest
 import pytest_asyncio
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from pydantic import BaseModel
 
-from fronta import Settings, State, Worker, store
+from fronta import Settings, State, Worker, store, task
 from fronta.model import NewTask
 from fronta.server import create_app
+from fronta.server.service import Service
 from tests.conftest import FAST, free_port, serve, wait_until
 from tests.workers import sleep_task, timed_task
 
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 TOKEN = "s3cret"  # noqa: S105  # test fixture value
-FAST_LIMIT = 1024 * 1024 + 64 * 1024  # payload cap + the envelope margin
+FAST_LIMIT = 1024 * 1024 + 64 * 1024 + 64 * 1024  # payload + metadata + envelope
 INITIALIZE = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -33,6 +35,20 @@ INITIALIZE = {
         "clientInfo": {"name": "t", "version": "0"},
     },
 }
+
+
+@pytest.mark.parametrize("key", [None, "dedupe"])
+async def test_service_enqueue_commits_and_hints(dsn, conn, key):
+    await store.publish_task_type(conn, sleep_task.spec)
+    service = Service(Settings(dsn=dsn))
+    await service.start()
+    try:
+        task_id = await service.enqueue("sleep", {"n": 7}, key=key)
+        row = await store.get_task(conn, task_id)
+        assert row.input["n"] == 7
+        assert row.key == key
+    finally:
+        await service.stop()
 
 
 @pytest_asyncio.fixture
@@ -272,6 +288,10 @@ async def test_mcp_tools_mirror_the_rest_operations(server, conn):
             "get_task",
             "list_tasks",
             "cancel",
+            "pause",
+            "resume",
+            "requeue",
+            "stats",
         ]
         types = await session.call_tool("list_task_types", {})
         assert not types.is_error
@@ -300,6 +320,9 @@ async def test_mcp_tools_mirror_the_rest_operations(server, conn):
             ("cancel", {"id": 424242}, "TaskNotFound"),
             ("get_task", {"id": 424242}, "TaskNotFound"),
             ("enqueue", {"type": "nope", "input": {}}, "UnknownTaskType"),
+            ("enqueue", {"type": "bad\x00name", "input": {}}, "InvalidInput"),
+            ("enqueue", {"type": "é" * 128, "input": {}}, "InvalidInput"),
+            ("enqueue", {"type": "sleep", "input": {}, "priority": True}, "integer"),
             ("enqueue", {"type": "sleep", "input": {"n": "x"}}, "InvalidInput"),
             ("enqueue", {"type": "sleep", "input": {}, "priority": 2**31}, "InvalidInput"),
             ("enqueue", {"type": "sleep", "input": {}, "key": "a\x00b"}, "InvalidInput"),
@@ -381,6 +404,10 @@ def test_the_server_never_runs_without_a_token(dsn):
 @pytest.mark.usefixtures("published")
 async def test_invalid_arguments_are_422_and_insert_nothing(api, conn):
     rejected = [
+        {"type": "a\x00b", "input": {}},
+        {"type": "é" * 128, "input": {}},
+        {"type": "sleep", "input": {}, "priority": True},
+        {"type": "sleep", "input": {}, "priority": "1"},
         {"type": "sleep", "input": {}, "priority": 2**31},
         {"type": "sleep", "input": {}, "priority": -(2**31) - 1},
         {"type": "sleep", "input": {}, "key": "a\x00b"},
@@ -404,6 +431,46 @@ async def test_invalid_arguments_are_422_and_insert_nothing(api, conn):
     for body in accepted:
         response = await api.post("/tasks", json=body)
         assert response.status_code == 201, (body, response.text)
+
+
+class RecursiveInput(BaseModel):
+    child: RecursiveInput | None = None
+
+
+async def test_recursive_schema_input_is_rejected_without_crashing(api, conn):
+    @task("recursive", input=RecursiveInput)
+    async def recursive(ctx, inp):
+        del ctx, inp
+
+    await store.publish_task_type(conn, recursive.spec)
+    nested = {}
+    for _ in range(180):
+        nested = {"child": nested}
+    response = await api.post("/tasks", json={"type": "recursive", "input": nested})
+    assert response.status_code == 422
+    assert "deeply nested" in response.json()["detail"]
+    assert (await (await conn.execute("SELECT count(*) FROM fronta.tasks")).fetchone())[0] == 0
+
+
+async def test_body_limit_allows_configured_metadata_and_payload(dsn, conn):
+    await store.publish_task_type(conn, sleep_task.spec)
+    settings = Settings(dsn=dsn, server_token=TOKEN, payload_cap=1024, progress_cap=128 * 1024)
+    app = create_app(settings)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as api,
+    ):
+        metadata = "x" * (100 * 1024)
+        response = await api.post(
+            "/api/v1/tasks", json={"type": "sleep", "input": {}, "metadata": metadata}
+        )
+        assert response.status_code == 201, response.text
+        row = await store.get_task(conn, response.json()["id"])
+        assert row.metadata == metadata
 
 
 PROXY_HOST = "fronta.example.com"
@@ -456,3 +523,55 @@ async def test_mcp_behind_a_reverse_proxy_accepts_the_configured_names_only(prox
             proxied + "/api/v1/task-types", headers={**bearer, "Host": PROXY_HOST}
         )
         assert rest.status_code == 200
+
+
+@pytest.mark.usefixtures("published")
+async def test_operator_rest_operations_and_metadata(api):
+    assert (await api.post("/task-types/sleep/pause")).json() == {"paused": True}
+    assert (await api.get("/task-types")).json()[0]["paused"]
+    created = await api.post(
+        "/tasks", json={"type": "sleep", "input": {}, "metadata": {"trace": "rest"}}
+    )
+    task_id = created.json()["id"]
+    assert (await api.get(f"/tasks/{task_id}")).json()["metadata"] == {"trace": "rest"}
+    assert (await api.post(f"/tasks/{task_id}/requeue")).status_code == 409
+    await api.post(f"/tasks/{task_id}/cancel")
+    assert (await api.post(f"/tasks/{task_id}/requeue")).json()["state"] == "queued"
+    assert (await api.post("/task-types/sleep/resume")).json() == {"paused": False}
+    counts = (await api.get("/stats")).json()
+    assert counts["types"][0]["queued_due"] == 1
+    assert (await api.post("/task-types/absent/pause")).status_code == 404
+    assert (await api.post("/tasks/999999/requeue")).status_code == 404
+    huge = await api.post(
+        "/tasks", json={"type": "sleep", "input": {}, "metadata": "x" * (64 * 1024)}
+    )
+    assert huge.status_code == 413
+
+
+@pytest.mark.usefixtures("published")
+async def test_operator_mcp_operations_and_metadata(server):
+    async with (
+        httpx.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as http,
+        streamable_http_client(server + "/mcp", http_client=http) as streams,
+        ClientSession(streams[0], streams[1]) as session,
+    ):
+        await session.initialize()
+        names = {t.name for t in (await session.list_tools()).tools}
+        assert {"pause", "resume", "requeue", "stats"} <= names
+        assert not (await session.call_tool("pause", {"type": "sleep"})).is_error
+        created = await session.call_tool(
+            "enqueue", {"type": "sleep", "input": {}, "metadata": {"trace": "mcp"}}
+        )
+        task_id = json.loads(created.content[0].text)["id"]
+        row = await session.call_tool("get_task", {"id": task_id})
+        assert json.loads(row.content[0].text)["metadata"] == {"trace": "mcp"}
+        assert (await session.call_tool("requeue", {"id": task_id})).is_error
+        await session.call_tool("cancel", {"id": task_id})
+        assert not (await session.call_tool("requeue", {"id": task_id})).is_error
+        assert not (await session.call_tool("resume", {"type": "sleep"})).is_error
+        assert not (await session.call_tool("stats", {})).is_error
+        assert (
+            await session.call_tool(
+                "enqueue", {"type": "sleep", "input": {}, "metadata": "x" * (64 * 1024)}
+            )
+        ).is_error

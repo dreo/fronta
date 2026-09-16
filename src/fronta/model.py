@@ -8,7 +8,7 @@ import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -44,13 +44,28 @@ class Executor(StrEnum):
     PROCESS = "process"
 
 
+type CompletionKind = Literal["succeed", "fail", "fail_final", "release", "cancel"]
+
+
+@dataclass(frozen=True, slots=True)
+class Completion:
+    """A fenced attempt outcome, held only until its durable batch commit."""
+
+    id: int
+    token: UUID
+    kind: CompletionKind
+    data: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class TaskEvent:
-    """One committed task state transition from the live event broadcast."""
+    """One durable subscription event; seq identifies this delivery."""
 
+    seq: int
     id: int
     type: str
     state: State
+    attempt: int
 
 
 def _check_finite(name: str, value: float, low: float, high: float) -> None:
@@ -158,6 +173,7 @@ class TaskRow:
     run_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    metadata: JSON = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +208,7 @@ class TaskTypeRow:
     policy: Policy
     fingerprint: str
     updated_at: datetime
+    paused: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +248,7 @@ class NewTask:
     run_at: datetime | None = None
     key: str | None = None
     concurrency_key: str | None = None
+    metadata_json: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

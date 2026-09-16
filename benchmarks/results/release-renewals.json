@@ -1,0 +1,528 @@
+{
+  "created_at": "2026-09-16T06:44:38.823902+00:00",
+  "phase": "renewals",
+  "source_sha256": "a6c68e292ae7ea944738fe89ba0a8739e7e95b034566a954bc764c551f454795",
+  "python": "3.13.14 (main, Jun 10 2026, 12:24:04) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "psycopg": "3.3.4",
+  "postgres": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+  "result": {
+    "duration_s": 300.0,
+    "batches": [
+      {
+        "time": 603706.247231,
+        "requested": 256,
+        "confirmed": 256
+      },
+      {
+        "time": 603711.2554585,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603711.279834375,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603716.261261416,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603721.282622375,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603721.305937333,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603726.268985083,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603731.261511291,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603731.286947166,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603736.268514916,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603741.261243208,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603741.28706375,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603746.263168583,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603751.28641825,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603751.309266875,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603756.2878615,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603761.286969541,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603761.314719875,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603771.286996541,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603771.312571916,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603776.292647,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603781.294366166,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603781.318214333,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603786.299328916,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603791.291056375,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603791.319699833,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603796.300158916,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603801.290932041,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603801.312723041,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603806.31408525,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603811.3017545,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603816.309924791,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603816.341486166,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603831.306637291,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603831.32930125,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603841.301650916,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603841.322835333,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603846.314508708,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603851.30952525,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603851.335301708,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603856.314959875,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603861.302192875,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603861.320713458,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603866.328409291,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603871.315414125,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603876.315631958,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603876.335706416,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603891.318948166,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603891.371002291,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603896.327036083,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603901.315791791,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603901.343209333,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603906.334659041,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603911.319597916,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603911.342907458,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603916.323332208,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603921.317606916,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603921.3410135,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603926.317466791,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603931.318584083,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603931.344227,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603936.332682875,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603941.324339833,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603941.351260666,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603951.328653458,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603951.350126208,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603956.34351475,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603961.341442208,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603966.33574825,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603966.358950041,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603976.343712083,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603976.37004025,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603981.335982583,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603986.346830875,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603986.37601875,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603996.349414708,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 603996.381639208,
+        "requested": 1000,
+        "confirmed": 1000
+      },
+      {
+        "time": 604001.349069833,
+        "requested": 1000,
+        "confirmed": 1000
+      }
+    ],
+    "samples": [
+      {
+        "seconds": 10.006386582972482,
+        "expired": 0
+      },
+      {
+        "seconds": 20.018711540964432,
+        "expired": 0
+      },
+      {
+        "seconds": 30.02566358295735,
+        "expired": 0
+      },
+      {
+        "seconds": 40.03165445802733,
+        "expired": 0
+      },
+      {
+        "seconds": 50.03681579104159,
+        "expired": 0
+      },
+      {
+        "seconds": 60.12210000003688,
+        "expired": 0
+      },
+      {
+        "seconds": 70.1263920830097,
+        "expired": 0
+      },
+      {
+        "seconds": 80.13462920801248,
+        "expired": 0
+      },
+      {
+        "seconds": 90.14077166595962,
+        "expired": 0
+      },
+      {
+        "seconds": 100.14606712502427,
+        "expired": 0
+      },
+      {
+        "seconds": 110.15462245803792,
+        "expired": 0
+      },
+      {
+        "seconds": 120.16174958297051,
+        "expired": 0
+      },
+      {
+        "seconds": 130.17227183305658,
+        "expired": 0
+      },
+      {
+        "seconds": 140.1835238749627,
+        "expired": 0
+      },
+      {
+        "seconds": 150.19151912501547,
+        "expired": 0
+      },
+      {
+        "seconds": 160.1989387080539,
+        "expired": 0
+      },
+      {
+        "seconds": 170.2082221249584,
+        "expired": 0
+      },
+      {
+        "seconds": 180.21269945800304,
+        "expired": 0
+      },
+      {
+        "seconds": 190.22307804098818,
+        "expired": 0
+      },
+      {
+        "seconds": 200.23284254106693,
+        "expired": 0
+      },
+      {
+        "seconds": 210.2463926250348,
+        "expired": 0
+      },
+      {
+        "seconds": 220.25826637505088,
+        "expired": 0
+      },
+      {
+        "seconds": 230.26930716598872,
+        "expired": 0
+      },
+      {
+        "seconds": 240.27454670798033,
+        "expired": 0
+      },
+      {
+        "seconds": 250.28602820797823,
+        "expired": 0
+      },
+      {
+        "seconds": 260.3011982910102,
+        "expired": 0
+      },
+      {
+        "seconds": 270.30801133299246,
+        "expired": 0
+      },
+      {
+        "seconds": 280.3191879580263,
+        "expired": 0
+      },
+      {
+        "seconds": 290.32821125001647,
+        "expired": 0
+      },
+      {
+        "seconds": 300.00409266597126,
+        "expired": 0
+      }
+    ],
+    "reaped": []
+  },
+  "passed": true
+}

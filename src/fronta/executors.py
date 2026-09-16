@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as SchemaValidationError
 from pydantic import BaseModel, ValidationError
 
 from fronta import codec
@@ -55,6 +58,14 @@ def validate_input(definition: TaskDefinition[Any, Any], row: TaskRow) -> BaseMo
     return model
 
 
+@lru_cache(maxsize=128)
+def _result_validator(model: type[BaseModel]) -> Draft202012Validator:
+    return Draft202012Validator(
+        model.model_json_schema(mode="serialization"),
+        format_checker=Draft202012Validator.FORMAT_CHECKER,
+    )
+
+
 def encode_result(definition: TaskDefinition[Any, Any], value: object, cap: int) -> str:
     """Validate against the output model (if any) and encode; anything else is a final failure.
 
@@ -63,11 +74,18 @@ def encode_result(definition: TaskDefinition[Any, Any], value: object, cap: int)
     """
     try:
         if definition.output_model is not None:
-            value = definition.output_model.model_validate(value).model_dump(mode="json")
+            value = definition.output_model.model_validate(value).model_dump(
+                mode="json", by_alias=True, warnings="error"
+            )
         elif isinstance(value, BaseModel):
             value = value.model_dump(mode="json")
-        return codec.encode_capped(value, cap, "result")  # type: ignore[arg-type]  # checked by dumps
-    except (ValidationError, TypeError, ValueError, RecursionError) as exc:
+        encoded = codec.encode_capped(value, cap, "result")  # type: ignore[arg-type]  # checked by dumps
+        if definition.output_model is not None:
+            # Existing Pydantic instances may have been mutated without revalidation, and
+            # custom serializers can change shape. Check the exact representation we publish.
+            _result_validator(definition.output_model).validate(value)
+        return encoded
+    except (ValidationError, SchemaValidationError, TypeError, ValueError, RecursionError) as exc:
         msg = f"result of task {definition.name!r} cannot be stored: {exc}"
         raise ResultSerializationError(msg) from exc
 

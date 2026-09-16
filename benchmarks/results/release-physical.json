@@ -1,0 +1,1741 @@
+{
+  "created_at": "2026-09-16T06:44:48.325679+00:00",
+  "source_sha256": "a6c68e292ae7ea944738fe89ba0a8739e7e95b034566a954bc764c551f454795",
+  "python": "3.13.13 (main, May 10 2026, 19:26:54) [Clang 22.1.3 ]",
+  "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+  "psycopg": "3.3.4",
+  "mode": "soak",
+  "acceptance_version": "sustained-load-v2",
+  "postgres": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+  "config": {
+    "concurrency": 256,
+    "sleep_s": 0.05,
+    "lease_s": 10,
+    "heartbeat_s": 3,
+    "reaper_interval_s": 1,
+    "max_attempts": 3,
+    "retention_s": 1200,
+    "purge_interval_s": 60,
+    "producers": 4,
+    "clients": 8,
+    "identity": true,
+    "rate_s": 750.0,
+    "timeout_s": 900.0
+  },
+  "requested_duration_s": 600.0,
+  "preloaded_history": 0,
+  "diagnostic": true,
+  "violations": [],
+  "samples": [
+    {
+      "seconds": 60.157845713001734,
+      "database": {
+        "wal_lsn": "0/581B5310",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 175962,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 3133,
+            "n_dead_tup": 150450,
+            "autovacuum_count": 1,
+            "autoanalyze_count": 1
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 178973,
+            "n_tup_upd": 354115,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 153721,
+            "n_dead_tup": 302522,
+            "autovacuum_count": 1,
+            "autoanalyze_count": 1
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 148578304,
+        "database": {
+          "xact_commit": 506859,
+          "xact_rollback": 77,
+          "blks_read": 23,
+          "blks_hit": 63431863,
+          "tup_inserted": 355440,
+          "tup_updated": 354169,
+          "tup_deleted": 175153,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 14303345,
+          "wal_fpi": 11699,
+          "wal_bytes": 1441050015.0,
+          "wal_write": 83625,
+          "wal_sync": 49520,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 2,
+          "num_done": 3,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 136523.0,
+          "sync_time": 466.0,
+          "buffers_written": 1363,
+          "slru_written": 42,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 605,
+          "blks_hit": 171284,
+          "blks_read": 0,
+          "blks_written": 589,
+          "flushes": 0,
+          "truncates": 18
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 7872512
+        },
+        {
+          "relname": "tasks",
+          "bytes": 148586496
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 178161,
+        "mean_ms": 6.874692654396866,
+        "p50_ms": 6.594,
+        "p95_ms": 10.893999999999998,
+        "p99_ms": 13.557,
+        "max_ms": 89.988
+      },
+      "acknowledged_events": 178161,
+      "terminal_events": 178161,
+      "free_bytes": 238316556288,
+      "completion_seconds": 60.36015428700193,
+      "backlog": {
+        "tasks": 206,
+        "events": 581,
+        "oldest_terminal_age_s": 59.586569,
+        "total": 787
+      },
+      "claim_minutes": {}
+    },
+    {
+      "seconds": 120.06503614200483,
+      "database": {
+        "wal_lsn": "0/75F1FF10",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 354984,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 2466,
+            "n_dead_tup": 177064,
+            "autovacuum_count": 2,
+            "autoanalyze_count": 2
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 357128,
+            "n_tup_upd": 713200,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 354555,
+            "n_dead_tup": 356286,
+            "autovacuum_count": 2,
+            "autoanalyze_count": 2
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 356007936,
+        "database": {
+          "xact_commit": 797447,
+          "xact_rollback": 92,
+          "blks_read": 23,
+          "blks_hit": 901021541,
+          "tup_inserted": 712617,
+          "tup_updated": 713287,
+          "tup_deleted": 354684,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 19492217,
+          "wal_fpi": 11711,
+          "wal_bytes": 1932403532.0,
+          "wal_write": 117708,
+          "wal_sync": 83603,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 2,
+          "num_done": 3,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 136523.0,
+          "sync_time": 466.0,
+          "buffers_written": 1363,
+          "slru_written": 42,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 947,
+          "blks_hit": 255061,
+          "blks_read": 0,
+          "blks_written": 931,
+          "flushes": 0,
+          "truncates": 29
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 28090368
+        },
+        {
+          "relname": "tasks",
+          "bytes": 356065280
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 178059,
+        "mean_ms": 57.780396452861126,
+        "p50_ms": 49.054,
+        "p95_ms": 150.448,
+        "p99_ms": 221.303,
+        "max_ms": 306.072
+      },
+      "acknowledged_events": 356220,
+      "terminal_events": 356220,
+      "free_bytes": 238030970880,
+      "completion_seconds": 120.28930565599876,
+      "backlog": {
+        "tasks": 1098,
+        "events": 1416,
+        "oldest_terminal_age_s": 119.747199,
+        "total": 2514
+      },
+      "claim_minutes": {
+        "0": {
+          "n": 32798,
+          "mean_ms": 10.232152104400683,
+          "p50_ms": 8.834136999212205,
+          "p95_ms": 21.17366699530976,
+          "p99_ms": 26.741078996565193,
+          "max_ms": 104.97122699598549
+        }
+      }
+    },
+    {
+      "seconds": 180.21563085899834,
+      "database": {
+        "wal_lsn": "0/940F1A08",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 534448,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 2099,
+            "n_dead_tup": 357278,
+            "autovacuum_count": 3,
+            "autoanalyze_count": 3
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 538160,
+            "n_tup_upd": 1072560,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 535054,
+            "n_dead_tup": 712960,
+            "autovacuum_count": 3,
+            "autoanalyze_count": 3
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 591003648,
+        "database": {
+          "xact_commit": 1049682,
+          "xact_rollback": 109,
+          "blks_read": 23,
+          "blks_hit": 1807919090,
+          "tup_inserted": 1073113,
+          "tup_updated": 1072681,
+          "tup_deleted": 534219,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 24722953,
+          "wal_fpi": 11716,
+          "wal_bytes": 2430068245.0,
+          "wal_write": 150900,
+          "wal_sync": 116795,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 2,
+          "num_done": 3,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 136523.0,
+          "sync_time": 466.0,
+          "buffers_written": 1363,
+          "slru_written": 42,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 1214,
+          "blks_hit": 318187,
+          "blks_read": 0,
+          "blks_written": 1198,
+          "flushes": 0,
+          "truncates": 37
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 53469184
+        },
+        {
+          "relname": "tasks",
+          "bytes": 591011840
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 178511,
+        "mean_ms": 334.0541890975906,
+        "p50_ms": 200.909,
+        "p95_ms": 1235.363,
+        "p99_ms": 1572.128,
+        "max_ms": 1820.8899999999999
+      },
+      "acknowledged_events": 534731,
+      "terminal_events": 534731,
+      "free_bytes": 237261594624,
+      "completion_seconds": 180.3922492970014,
+      "backlog": {
+        "tasks": 2210,
+        "events": 2101,
+        "oldest_terminal_age_s": 179.674955,
+        "total": 4311
+      },
+      "claim_minutes": {
+        "1": {
+          "n": 6340,
+          "mean_ms": 65.23463422589217,
+          "p50_ms": 47.11961000430165,
+          "p95_ms": 169.76277800131356,
+          "p99_ms": 218.38542300247354,
+          "max_ms": 338.76787700137356
+        }
+      }
+    },
+    {
+      "seconds": 240.02293123600248,
+      "database": {
+        "wal_lsn": "0/B215D268",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 715878,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1534,
+            "n_dead_tup": 142211,
+            "autovacuum_count": 4,
+            "autoanalyze_count": 4
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 716590,
+            "n_tup_upd": 1434208,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 713325,
+            "n_dead_tup": 309565,
+            "autovacuum_count": 4,
+            "autoanalyze_count": 4
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 637747200,
+        "database": {
+          "xact_commit": 1399838,
+          "xact_rollback": 355,
+          "blks_read": 23,
+          "blks_hit": 1875398923,
+          "tup_inserted": 1432973,
+          "tup_updated": 1434362,
+          "tup_deleted": 716023,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 29873176,
+          "wal_fpi": 11726,
+          "wal_bytes": 2922974590.0,
+          "wal_write": 185216,
+          "wal_sync": 151111,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 2,
+          "num_done": 3,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 136523.0,
+          "sync_time": 466.0,
+          "buffers_written": 1363,
+          "slru_written": 42,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 1608,
+          "blks_hit": 422614,
+          "blks_read": 0,
+          "blks_written": 1603,
+          "flushes": 0,
+          "truncates": 50
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 57540608
+        },
+        {
+          "relname": "tasks",
+          "bytes": 637747200
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 182886,
+        "mean_ms": 19.757305419769693,
+        "p50_ms": 12.016,
+        "p95_ms": 29.076999999999998,
+        "p99_ms": 349.69,
+        "max_ms": 690.827
+      },
+      "acknowledged_events": 717617,
+      "terminal_events": 717617,
+      "free_bytes": 236697575424,
+      "completion_seconds": 240.22438560199953,
+      "backlog": {
+        "tasks": 349,
+        "events": 580,
+        "oldest_terminal_age_s": 239.587812,
+        "total": 929
+      },
+      "claim_minutes": {
+        "2": {
+          "n": 1900,
+          "mean_ms": 240.70681120320313,
+          "p50_ms": 236.4078899991,
+          "p95_ms": 359.9737920012558,
+          "p99_ms": 436.37090600532247,
+          "max_ms": 529.2567989963572
+        }
+      }
+    },
+    {
+      "seconds": 300.2276841960047,
+      "database": {
+        "wal_lsn": "0/CFDC3110",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 896903,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1873,
+            "n_dead_tup": 148009,
+            "autovacuum_count": 5,
+            "autoanalyze_count": 5
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 897150,
+            "n_tup_upd": 1796119,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 894757,
+            "n_dead_tup": 307729,
+            "autovacuum_count": 5,
+            "autoanalyze_count": 5
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 649764864,
+        "database": {
+          "xact_commit": 1819493,
+          "xact_rollback": 427,
+          "blks_read": 23,
+          "blks_hit": 1913789930,
+          "tup_inserted": 1794558,
+          "tup_updated": 1796306,
+          "tup_deleted": 897156,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 35032875,
+          "wal_fpi": 15491,
+          "wal_bytes": 3413763757.0,
+          "wal_write": 219701,
+          "wal_sync": 185596,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 3,
+          "num_done": 3,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 136523.0,
+          "sync_time": 466.0,
+          "buffers_written": 12028,
+          "slru_written": 1159,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 2040,
+          "blks_hit": 538930,
+          "blks_read": 0,
+          "blks_written": 2024,
+          "flushes": 0,
+          "truncates": 63
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 57540608
+        },
+        {
+          "relname": "tasks",
+          "bytes": 649764864
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 180738,
+        "mean_ms": 11.442389005079175,
+        "p50_ms": 9.209,
+        "p95_ms": 25.784000000000002,
+        "p99_ms": 34.922000000000004,
+        "max_ms": 218.54000000000002
+      },
+      "acknowledged_events": 898328,
+      "terminal_events": 898328,
+      "free_bytes": 236172517376,
+      "completion_seconds": 300.43705356099963,
+      "backlog": {
+        "tasks": 206,
+        "events": 648,
+        "oldest_terminal_age_s": 299.832835,
+        "total": 854
+      },
+      "claim_minutes": {
+        "3": {
+          "n": 16663,
+          "mean_ms": 26.409811512808204,
+          "p50_ms": 22.481581996544264,
+          "p95_ms": 46.99370400339831,
+          "p99_ms": 96.77035300410353,
+          "max_ms": 324.7323729956406
+        }
+      }
+    },
+    {
+      "seconds": 360.125193398002,
+      "database": {
+        "wal_lsn": "0/F495BD70",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 1076691,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 430,
+            "n_dead_tup": 141497,
+            "autovacuum_count": 6,
+            "autoanalyze_count": 6
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 1078174,
+            "n_tup_upd": 2155608,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1076897,
+            "n_dead_tup": 303308,
+            "autovacuum_count": 6,
+            "autoanalyze_count": 6
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 690880512,
+        "database": {
+          "xact_commit": 2244245,
+          "xact_rollback": 483,
+          "blks_read": 23,
+          "blks_hit": 1946036423,
+          "tup_inserted": 2155370,
+          "tup_updated": 2155828,
+          "tup_deleted": 1077997,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 40177656,
+          "wal_fpi": 37418,
+          "wal_bytes": 4021939369.0,
+          "wal_write": 252158,
+          "wal_sync": 218052,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 3,
+          "num_done": 3,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 136523.0,
+          "sync_time": 466.0,
+          "buffers_written": 38411,
+          "slru_written": 1159,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 2462,
+          "blks_hit": 652396,
+          "blks_read": 0,
+          "blks_written": 2446,
+          "flushes": 0,
+          "truncates": 76
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 57540608
+        },
+        {
+          "relname": "tasks",
+          "bytes": 690896896
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 179711,
+        "mean_ms": 11.58860907234393,
+        "p50_ms": 9.338000000000001,
+        "p95_ms": 23.078999999999997,
+        "p99_ms": 48.952000000000005,
+        "max_ms": 244.264
+      },
+      "acknowledged_events": 1078023,
+      "terminal_events": 1078023,
+      "free_bytes": 235443650560,
+      "completion_seconds": 360.3421235390051,
+      "backlog": {
+        "tasks": 212,
+        "events": 620,
+        "oldest_terminal_age_s": 359.731869,
+        "total": 832
+      },
+      "claim_minutes": {
+        "4": {
+          "n": 29548,
+          "mean_ms": 12.340823613165647,
+          "p50_ms": 10.397163001471199,
+          "p95_ms": 34.68533800332807,
+          "p99_ms": 46.89714699634351,
+          "max_ms": 120.11615899973549
+        }
+      }
+    },
+    {
+      "seconds": 420.00734103400464,
+      "database": {
+        "wal_lsn": "1/11B8AC70",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 1255860,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1387,
+            "n_dead_tup": 138763,
+            "autovacuum_count": 7,
+            "autoanalyze_count": 7
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 1256340,
+            "n_tup_upd": 2514002,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1253903,
+            "n_dead_tup": 306855,
+            "autovacuum_count": 7,
+            "autoanalyze_count": 7
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 764420096,
+        "database": {
+          "xact_commit": 2674794,
+          "xact_rollback": 525,
+          "blks_read": 23,
+          "blks_hit": 1976605652,
+          "tup_inserted": 2512798,
+          "tup_updated": 2514255,
+          "tup_deleted": 1255958,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 45281905,
+          "wal_fpi": 37428,
+          "wal_bytes": 4499194812.0,
+          "wal_write": 285899,
+          "wal_sync": 251793,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 3,
+          "num_done": 3,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 136523.0,
+          "sync_time": 466.0,
+          "buffers_written": 59351,
+          "slru_written": 1159,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 2901,
+          "blks_hit": 770874,
+          "blks_read": 0,
+          "blks_written": 2885,
+          "flushes": 0,
+          "truncates": 90
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 57540608
+        },
+        {
+          "relname": "tasks",
+          "bytes": 764428288
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 179632,
+        "mean_ms": 10.52907230337579,
+        "p50_ms": 8.623000000000001,
+        "p95_ms": 20.872999999999998,
+        "p99_ms": 37.718,
+        "max_ms": 210.618
+      },
+      "acknowledged_events": 1257673,
+      "terminal_events": 1257673,
+      "free_bytes": 234935508992,
+      "completion_seconds": 420.21852846300317,
+      "backlog": {
+        "tasks": 224,
+        "events": 595,
+        "oldest_terminal_age_s": 419.538366,
+        "total": 819
+      },
+      "claim_minutes": {
+        "5": {
+          "n": 31005,
+          "mean_ms": 11.108183777906579,
+          "p50_ms": 10.632076999172568,
+          "p95_ms": 15.06393299496267,
+          "p99_ms": 21.688785003789235,
+          "max_ms": 124.79962999350391
+        }
+      }
+    },
+    {
+      "seconds": 480.0579717360015,
+      "database": {
+        "wal_lsn": "1/2EEF60B0",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 1436422,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 833,
+            "n_dead_tup": 144826,
+            "autovacuum_count": 8,
+            "autoanalyze_count": 8
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 1437182,
+            "n_tup_upd": 2875071,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1435024,
+            "n_dead_tup": 310225,
+            "autovacuum_count": 8,
+            "autoanalyze_count": 8
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 836173824,
+        "database": {
+          "xact_commit": 3109461,
+          "xact_rollback": 570,
+          "blks_read": 23,
+          "blks_hit": 2006473160,
+          "tup_inserted": 2874109,
+          "tup_updated": 2875357,
+          "tup_deleted": 1437149,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 50430410,
+          "wal_fpi": 37445,
+          "wal_bytes": 4980946769.0,
+          "wal_write": 320052,
+          "wal_sync": 285946,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 3,
+          "num_done": 3,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 136523.0,
+          "sync_time": 466.0,
+          "buffers_written": 80350,
+          "slru_written": 1159,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 3340,
+          "blks_hit": 889639,
+          "blks_read": 0,
+          "blks_written": 3331,
+          "flushes": 0,
+          "truncates": 104
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 57540608
+        },
+        {
+          "relname": "tasks",
+          "bytes": 836190208
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 180144,
+        "mean_ms": 10.629333283373303,
+        "p50_ms": 8.777999999999999,
+        "p95_ms": 22.761,
+        "p99_ms": 40.207,
+        "max_ms": 213.441
+      },
+      "acknowledged_events": 1437825,
+      "terminal_events": 1437825,
+      "free_bytes": 234345635840,
+      "completion_seconds": 480.25678644800064,
+      "backlog": {
+        "tasks": 243,
+        "events": 552,
+        "oldest_terminal_age_s": 479.57329,
+        "total": 795
+      },
+      "claim_minutes": {
+        "6": {
+          "n": 32002,
+          "mean_ms": 10.798107226342077,
+          "p50_ms": 10.359066996898036,
+          "p95_ms": 14.500797995424364,
+          "p99_ms": 20.92930599610554,
+          "max_ms": 119.92384999757633
+        }
+      }
+    },
+    {
+      "seconds": 540.2038226290024,
+      "database": {
+        "wal_lsn": "1/4C07BAB8",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 1616596,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 3159,
+            "n_dead_tup": 145124,
+            "autovacuum_count": 9,
+            "autoanalyze_count": 9
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 1618190,
+            "n_tup_upd": 3235490,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1616801,
+            "n_dead_tup": 311031,
+            "autovacuum_count": 9,
+            "autoanalyze_count": 9
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 923459584,
+        "database": {
+          "xact_commit": 3485717,
+          "xact_rollback": 697,
+          "blks_read": 23,
+          "blks_hit": 2054255495,
+          "tup_inserted": 3235291,
+          "tup_updated": 3235809,
+          "tup_deleted": 1615301,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 55494599,
+          "wal_fpi": 37611,
+          "wal_bytes": 5459632549.0,
+          "wal_write": 354195,
+          "wal_sync": 320089,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 4,
+          "num_done": 4,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 367759.0,
+          "sync_time": 984.0,
+          "buffers_written": 90690,
+          "slru_written": 1837,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 3752,
+          "blks_hit": 998736,
+          "blks_read": 0,
+          "blks_written": 3747,
+          "flushes": 0,
+          "truncates": 117
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 57540608
+        },
+        {
+          "relname": "tasks",
+          "bytes": 923484160
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 180305,
+        "mean_ms": 13.608638362774188,
+        "p50_ms": 10.621,
+        "p95_ms": 27.171,
+        "p99_ms": 38.618,
+        "max_ms": 250.88899999999998
+      },
+      "acknowledged_events": 1618074,
+      "terminal_events": 1618074,
+      "free_bytes": 234080694272,
+      "completion_seconds": 540.4109350380022,
+      "backlog": {
+        "tasks": 314,
+        "events": 721,
+        "oldest_terminal_age_s": 539.717191,
+        "total": 1035
+      },
+      "claim_minutes": {
+        "7": {
+          "n": 32180,
+          "mean_ms": 10.754323473719992,
+          "p50_ms": 10.337095998693258,
+          "p95_ms": 14.315658998384606,
+          "p99_ms": 20.627042998967227,
+          "max_ms": 124.9069160039653
+        }
+      }
+    },
+    {
+      "seconds": 600.2039459040025,
+      "database": {
+        "wal_lsn": "1/72422E68",
+        "table": [
+          {
+            "relname": "task_types",
+            "n_tup_ins": 1,
+            "n_tup_upd": 8,
+            "n_tup_hot_upd": 8,
+            "n_live_tup": 1,
+            "n_dead_tup": 8,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "subscriptions",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          },
+          {
+            "relname": "events",
+            "n_tup_ins": 1796659,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1584,
+            "n_dead_tup": 147852,
+            "autovacuum_count": 10,
+            "autoanalyze_count": 10
+          },
+          {
+            "relname": "tasks",
+            "n_tup_ins": 1798880,
+            "n_tup_upd": 3595523,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1796956,
+            "n_dead_tup": 310704,
+            "autovacuum_count": 10,
+            "autoanalyze_count": 10
+          },
+          {
+            "relname": "meta",
+            "n_tup_ins": 1,
+            "n_tup_upd": 0,
+            "n_tup_hot_upd": 0,
+            "n_live_tup": 1,
+            "n_dead_tup": 0,
+            "autovacuum_count": 0,
+            "autoanalyze_count": 0
+          }
+        ],
+        "relation_bytes": 1010163712,
+        "database": {
+          "xact_commit": 3905415,
+          "xact_rollback": 744,
+          "blks_read": 23,
+          "blks_hit": 2088947572,
+          "tup_inserted": 3596044,
+          "tup_updated": 3595875,
+          "tup_deleted": 1796792,
+          "deadlocks": 0,
+          "temp_bytes": 0
+        },
+        "wal": {
+          "wal_records": 60622946,
+          "wal_fpi": 62179,
+          "wal_bytes": 6091365050.0,
+          "wal_write": 388836,
+          "wal_sync": 354729,
+          "wal_write_time": 0.0,
+          "wal_sync_time": 0.0
+        },
+        "wal_io_source": "pg_stat_io (object=wal, context=normal; all backend types)",
+        "checkpointer": {
+          "num_timed": 10,
+          "num_requested": 4,
+          "num_done": 4,
+          "restartpoints_timed": 0,
+          "restartpoints_req": 0,
+          "restartpoints_done": 0,
+          "write_time": 367759.0,
+          "sync_time": 984.0,
+          "buffers_written": 110480,
+          "slru_written": 1837,
+          "stats_reset": "2026-09-16 05:54:14.933741+00:00"
+        },
+        "notify_slru": {
+          "blks_zeroed": 4188,
+          "blks_hit": 1115988,
+          "blks_read": 0,
+          "blks_written": 4172,
+          "flushes": 0,
+          "truncates": 130
+        }
+      },
+      "relation_bytes": [
+        {
+          "relname": "task_types",
+          "bytes": 32768
+        },
+        {
+          "relname": "subscriptions",
+          "bytes": 32768
+        },
+        {
+          "relname": "events",
+          "bytes": 57540608
+        },
+        {
+          "relname": "tasks",
+          "bytes": 1010171904
+        },
+        {
+          "relname": "meta",
+          "bytes": 32768
+        }
+      ],
+      "feed_lag": {
+        "n": 180110,
+        "mean_ms": 10.546538815168509,
+        "p50_ms": 8.741999999999999,
+        "p95_ms": 23.428,
+        "p99_ms": 31.939000000000004,
+        "max_ms": 232.95
+      },
+      "acknowledged_events": 1798257,
+      "terminal_events": 1798257,
+      "free_bytes": 233984643072,
+      "completion_seconds": 600.4290763520039,
+      "backlog": {
+        "tasks": 206,
+        "events": 698,
+        "oldest_terminal_age_s": 599.76518,
+        "total": 904
+      },
+      "claim_minutes": {
+        "8": {
+          "n": 20734,
+          "mean_ms": 20.195932482301266,
+          "p50_ms": 17.679575001238845,
+          "p95_ms": 37.79133599891793,
+          "p99_ms": 43.24707399791805,
+          "max_ms": 126.73287699726643
+        }
+      }
+    }
+  ],
+  "claim_minutes": {
+    "0": {
+      "n": 32798,
+      "mean_ms": 10.232152104400683,
+      "p50_ms": 8.834136999212205,
+      "p95_ms": 21.17366699530976,
+      "p99_ms": 26.741078996565193,
+      "max_ms": 104.97122699598549
+    },
+    "1": {
+      "n": 6340,
+      "mean_ms": 65.23463422589217,
+      "p50_ms": 47.11961000430165,
+      "p95_ms": 169.76277800131356,
+      "p99_ms": 218.38542300247354,
+      "max_ms": 338.76787700137356
+    },
+    "2": {
+      "n": 1900,
+      "mean_ms": 240.70681120320313,
+      "p50_ms": 236.4078899991,
+      "p95_ms": 359.9737920012558,
+      "p99_ms": 436.37090600532247,
+      "max_ms": 529.2567989963572
+    },
+    "3": {
+      "n": 16663,
+      "mean_ms": 26.409811512808204,
+      "p50_ms": 22.481581996544264,
+      "p95_ms": 46.99370400339831,
+      "p99_ms": 96.77035300410353,
+      "max_ms": 324.7323729956406
+    },
+    "4": {
+      "n": 29548,
+      "mean_ms": 12.340823613165647,
+      "p50_ms": 10.397163001471199,
+      "p95_ms": 34.68533800332807,
+      "p99_ms": 46.89714699634351,
+      "max_ms": 120.11615899973549
+    },
+    "5": {
+      "n": 31005,
+      "mean_ms": 11.108183777906579,
+      "p50_ms": 10.632076999172568,
+      "p95_ms": 15.06393299496267,
+      "p99_ms": 21.688785003789235,
+      "max_ms": 124.79962999350391
+    },
+    "6": {
+      "n": 32002,
+      "mean_ms": 10.798107226342077,
+      "p50_ms": 10.359066996898036,
+      "p95_ms": 14.500797995424364,
+      "p99_ms": 20.92930599610554,
+      "max_ms": 119.92384999757633
+    },
+    "7": {
+      "n": 32180,
+      "mean_ms": 10.754323473719992,
+      "p50_ms": 10.337095998693258,
+      "p95_ms": 14.315658998384606,
+      "p99_ms": 20.627042998967227,
+      "max_ms": 124.9069160039653
+    },
+    "8": {
+      "n": 20734,
+      "mean_ms": 20.195932482301266,
+      "p50_ms": 17.679575001238845,
+      "p95_ms": 37.79133599891793,
+      "p99_ms": 43.24707399791805,
+      "max_ms": 126.73287699726643
+    },
+    "9": {
+      "n": 29345,
+      "mean_ms": 12.56022690124025,
+      "p50_ms": 10.699506005039439,
+      "p95_ms": 35.3668559982907,
+      "p99_ms": 47.54072600189829,
+      "max_ms": 134.03567500063218
+    },
+    "10": {
+      "n": 368,
+      "mean_ms": 11.334044600477247,
+      "p50_ms": 11.04647899774136,
+      "p95_ms": 15.033477000542916,
+      "p99_ms": 17.507331998785958,
+      "max_ms": 47.831709001911804
+    }
+  },
+  "feed_clock": "commit",
+  "feed_latency_bound": "upper: timestamp precedes durable commit; includes age query",
+  "started_monotonic": 39171.523445326,
+  "identity": {
+    "count": 1800000,
+    "sum": 1620000900000,
+    "xor": 337552263266014174257016654357536635295
+  },
+  "acknowledged_events": 1800000,
+  "producer_results": [
+    {
+      "jobs": 450000,
+      "elapsed_s": 600.0060712399936,
+      "cpu_s": 427.62613799999997,
+      "identity": {
+        "count": 450000,
+        "sum": 404998865741,
+        "xor": 214206137670471445449620276391103466671
+      }
+    },
+    {
+      "jobs": 450000,
+      "elapsed_s": 600.0216067930014,
+      "cpu_s": 426.713277,
+      "identity": {
+        "count": 450000,
+        "sum": 405004736088,
+        "xor": 230852730254660810884388492162442661499
+      }
+    },
+    {
+      "jobs": 450000,
+      "elapsed_s": 600.0066308899986,
+      "cpu_s": 428.106022,
+      "identity": {
+        "count": 450000,
+        "sum": 404997716971,
+        "xor": 263120827040070626439542287316854610974
+      }
+    },
+    {
+      "jobs": 450000,
+      "elapsed_s": 600.0319930170008,
+      "cpu_s": 427.672547,
+      "identity": {
+        "count": 450000,
+        "sum": 404999581200,
+        "xor": 69841879539943403387282322547790112597
+      }
+    }
+  ],
+  "elapsed_s": 601.0962046060013,
+  "producer_tasks_per_s": 2999.840043444151,
+  "tail_feed_lag": {
+    "n": 1743,
+    "mean_ms": 79.15038496844521,
+    "p50_ms": 65.982,
+    "p95_ms": 208.198,
+    "p99_ms": 235.16,
+    "max_ms": 241.257
+  },
+  "kills": [],
+  "final_backlog": {
+    "tasks": 0,
+    "events": 0
+  },
+  "open_transaction": {
+    "begin_s": 60.01590865300386,
+    "end_s": 180.01968145400315
+  },
+  "received_terminal_identity": {
+    "count": 1800000,
+    "sum": 1620000900000,
+    "xor": 337552263266014174257016654357536635295
+  },
+  "worker_exit_codes": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "checks": {
+    "accounting": true,
+    "producer_rate": true,
+    "completion_rate": true,
+    "completion_windows": false,
+    "backlog": false,
+    "retention": true,
+    "storage_plateau": false,
+    "open_transaction": false
+  },
+  "sustainability": {
+    "completion_tasks_per_s": 2994.528972579091,
+    "completion_windows": [],
+    "backlog": {
+      "pre_transaction_median": null,
+      "recovery_median": null,
+      "final_median": 879.0,
+      "allowance_tasks": 2336
+    },
+    "storage": {
+      "tasks": {
+        "early_max_bytes": null,
+        "late_max_bytes": null
+      },
+      "events": {
+        "early_max_bytes": null,
+        "late_max_bytes": null
+      }
+    },
+    "storage_growth_tolerance_fraction": 0.01,
+    "oldest_terminal_age_s": 599.76518,
+    "cleanup_age_limit_s": 1344.0
+  },
+  "passed": false
+}

@@ -7,9 +7,11 @@ import contextlib
 import signal
 import time
 
+import psycopg
 import pytest
 
-from fronta import Settings, State, Worker, store, task
+from fronta import Settings, State, Worker, runtime, store, task
+from fronta.model import NewTask
 from tests.conftest import FAST, wait_until
 from tests.workers import In, sleep_task
 
@@ -123,6 +125,7 @@ async def test_listener_reconnects_after_its_backend_is_terminated(conn, dsn, ru
         task_id = await sleep_task.enqueue(In(sleep_s=60))
         await wait_until(lambda: _state(conn, task_id, State.RUNNING), timeout=10)
         await store.request_cancel(conn, task_id)
+        runtime.hints(slow_beats).cancel([task_id])
         # Only NOTIFY can deliver this in time (heartbeats are 30 s apart).
         await wait_until(lambda: _state(conn, task_id, State.CANCELLED), timeout=5)
 
@@ -164,10 +167,10 @@ async def test_heartbeats_end_when_the_attempt_settles_even_if_a_cancellation_is
     worker cannot stop) until the pool closes."""
     real_heartbeat = store.heartbeat
 
-    async def heartbeat_that_loses_cancellation(conn, task_id, token, lease_s):
+    async def heartbeat_that_loses_cancellation(conn, renewals, lease_s):
         with contextlib.suppress(asyncio.CancelledError):  # the controller's cancel lands
             await asyncio.sleep(30)  # here and is lost, as in the buggy library
-        return await real_heartbeat(conn, task_id, token, lease_s)
+        return await real_heartbeat(conn, renewals, lease_s)
 
     monkeypatch.setattr(store, "heartbeat", heartbeat_that_loses_cancellation)
     quick = Settings(dsn=dsn, **{**FAST, "heartbeat_s": 0.05, "lease_s": 60.0})
@@ -197,7 +200,7 @@ async def test_a_lost_lease_stops_the_heartbeats(conn, dsn, run_worker, monkeypa
     async def heartbeat_lost(*_args):
         nonlocal calls
         calls += 1
-        return store.Heartbeat.LOST
+        return {}
 
     monkeypatch.setattr(store, "heartbeat", heartbeat_lost)
     quick = Settings(dsn=dsn, **{**FAST, "heartbeat_s": 0.05, "lease_s": 60.0})
@@ -211,3 +214,57 @@ async def test_a_lost_lease_stops_the_heartbeats(conn, dsn, run_worker, monkeypa
 
 async def _beats_at_least(count, n):
     return count() >= n
+
+
+async def test_lost_claim_response_releases_orphans_without_charging_failure(
+    conn, settings, run_worker, monkeypatch
+):
+
+    await store.publish_task_type(conn, sleep_task.spec)
+    ids = [await store.enqueue(conn, NewTask("sleep", "{}", sleep_task.policy)) for _ in range(5)]
+    original_claim, original_release = store.claim, store.release_orphans
+    lost, released = [], []
+
+    async def lose_response(c, **kwargs):
+        rows = await original_claim(c, **kwargs)
+        if rows and not lost:
+            lost.extend(r.id for r in rows)
+            await c.close()
+            raise psycopg.OperationalError("committed claim response lost")
+        return rows
+
+    async def release(c, owner, live):
+        rows = await original_release(c, owner, live)
+        released.extend(i for i, _, _ in rows)
+        return rows
+
+    monkeypatch.setattr(store, "claim", lose_response)
+    monkeypatch.setattr(store, "release_orphans", release)
+    async with run_worker(Worker([sleep_task], settings=settings)):
+
+        async def done():
+            return all([(await store.get_task(conn, i)).state is State.SUCCEEDED for i in ids])
+
+        await wait_until(done)
+    assert sorted(lost) == sorted(released) == ids
+    for i in ids:
+        row = await store.get_task(conn, i)
+        assert row.failures == 0
+        assert row.attempt == 2
+
+
+async def test_orphan_release_excludes_live_attempts_and_other_workers(conn):
+
+    await store.publish_task_type(conn, sleep_task.spec)
+    for _ in range(3):
+        await store.enqueue(conn, NewTask("sleep", "{}", sleep_task.policy))
+    rows = await store.claim(conn, types=["sleep"], worker="one", lease_s=30, deadline_s=1, count=2)
+    other = await store.claim(
+        conn, types=["sleep"], worker="two", lease_s=30, deadline_s=1, count=1
+    )
+    await store.request_cancel(conn, rows[1].id)
+    assert await store.release_orphans(conn, "one", [rows[0].id]) == [
+        (rows[1].id, "sleep", State.CANCELLED)
+    ]
+    assert (await store.get_task(conn, rows[0].id)).state is State.RUNNING
+    assert (await store.get_task(conn, other[0].id)).state is State.RUNNING
