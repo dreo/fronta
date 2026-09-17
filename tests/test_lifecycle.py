@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_serializer
 from fronta import Backoff, ProgressTooLarge, Settings, State, Worker, store, task
 from fronta import worker as worker_module
 from fronta.model import NewTask
-from tests.conftest import FAST, wait_until
+from tests.conftest import FAST, delay_bounds, wait_until
 from tests.workers import (
     In,
     Out,
@@ -181,7 +181,7 @@ async def test_exception_retries_with_backoff_then_fails_after_the_budget(
         assert "failing on purpose (7)" in first_retry.error["message"]
         assert "raise RuntimeError" in first_retry.error["traceback"]
         delay = (first_retry.run_at - first_retry.started_at).total_seconds()
-        low, high = fail_task.policy.backoff.delay_bounds(1)
+        low, high = delay_bounds(fail_task.policy.backoff, 1)
         assert low - 0.05 <= delay <= high + 0.5  # jittered in [d/2, d] plus attempt duration
         final = await settled(conn, task_id, State.FAILED)
     assert final.attempt == 3

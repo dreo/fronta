@@ -23,7 +23,8 @@ uv run --locked python -m tests.stress.grade .scratch/benchmarks/throughput.json
   --output .scratch/benchmarks/throughput-grade.json
 ```
 
-This profile assumes enough memory for the buffers; see [configuration](../docs/postgresql.md).
+This profile assumes enough memory for the buffers; see
+[PostgreSQL configuration](../REFERENCE.md#postgresql-configuration).
 Existing output paths are refused. `--cases REGEX`, `--jobs N`, `--label TEXT`, and `--seed N`
 control selection and run order. The matrix controls workloads, including worker/concurrency
 counts, types, payload sizes, producer counts, progress, limits and retention. It does not change
@@ -59,24 +60,19 @@ uv run --locked python -m tests.stress.acceptance backfill --output .scratch/ben
 ```
 
 The backfill run records chunk rate, claim latency in the ten seconds around registration,
-identity reconciliation of acknowledged events, duplicates, worker exits, two ordinary vacuum
-cycles, and worker progress throughout a 30-second caller transaction while the new consumer
-waits on virtual transaction locks. Every complete five-second interval must contain completions;
-the consumer must remain pending until the blocker ends, then finish. The report records lock
-poll count, mean/max client query duration, total query time and worker latency during the wait.
-These are measured costs, not a claim that polling is free. It reports heap and index sizes
-separately. Ordinary vacuum makes index space reusable but does
-not promise to shrink files to their original empty size. Its storage gate requires zero dead
-tuples and a stable heap/index data footprint after two cycles using
-`VACUUM (ANALYZE, INDEX_CLEANUP ON) fronta.events`. Default `AUTO` index cleanup can deliberately
-leave a small number of dead line pointers, so the measurement explicitly requests cleanup;
-it uses no table rewrite or server configuration change. Vacuum's free-space maps are
-reported separately through total index bytes. `--history`, `--rate`, `--seconds` and `--matrix`
-allow smaller diagnostics; only the default million-row run is the capacity check. Run on an
-otherwise idle test instance and retain the JSON report with the measured source hash.
+identity reconciliation of acknowledged events, duplicates, worker exits, and worker progress
+throughout a 30-second caller transaction while the new consumer waits on virtual transaction
+locks: every complete five-second interval must contain completions, and the consumer must stay
+pending until the blocker ends, then finish. The report records lock poll count and client query
+durations during the wait; these are measured costs, not a claim that polling is free.
 
-The mixed-version rehearsals have been removed. Old-schema operation is
-unsupported; tests cover the required initialization and retained history after the upgrade.
+The storage gate runs two `VACUUM (ANALYZE, INDEX_CLEANUP ON) fronta.events` cycles after
+consumption and requires zero dead tuples and a stable heap/index footprint; heap and index
+sizes are reported separately. Ordinary vacuum makes index space reusable but does not shrink
+files to their original size, and default `AUTO` index cleanup may leave a few dead line
+pointers, which is why cleanup is requested explicitly. `--history`, `--rate`, `--seconds` and
+`--matrix` allow smaller diagnostics; only the default million-row run is the capacity check.
+Run on an otherwise idle instance and retain the JSON report with the measured source hash.
 
 ## Sustained load and faults
 

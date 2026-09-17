@@ -7,6 +7,7 @@ import psycopg
 
 from fronta import Backoff, State, store, subscribe
 from fronta.model import Completion, NewTask, Policy
+from tests.conftest import delay_bounds
 from tests.workers import sleep_task
 
 
@@ -198,7 +199,7 @@ async def test_retry_delay_is_computed_by_the_database_from_the_snapshot(conn):
             "SELECT extract(epoch FROM run_at - now()) FROM fronta.tasks WHERE state = 'queued'"
         )
         delays = [float(r[0]) for r in await cur.fetchall()]
-    low, high = rows[0].backoff.delay_bounds(1)
+    low, high = delay_bounds(rows[0].backoff, 1)
     assert all(low <= d <= high for d in delays)
     assert len({round(d, 3) for d in delays}) > 1  # jitter is real
 

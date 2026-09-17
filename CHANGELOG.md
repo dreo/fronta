@@ -30,6 +30,9 @@ follow each release's database initialization instructions.
 ### Removed
 
 - Legacy claim-function refresh logic and mixed-version stress rehearsals.
+- `Backoff.delay_bounds()`, which only the tests used; read `run_at` on the task row instead.
+- `SPEC.md`, `SECURITY.md`, `docs/postgresql.md` and `docs/reference.md`: their content lives in
+  the top-level `REFERENCE.md`.
 
 ## [0.5.0] - 2026-09-16
 
@@ -75,7 +78,7 @@ follow each release's database initialization instructions.
 `subscribe_events()` is replaced by `subscribe(name)` with explicit batch acknowledgements.
 Pause producers, gracefully stop 0.4.x workers, install this version, run `fronta db init`, then
 restart connections and the fleet. Use this pause for the initial schema change. See the complete
-[upgrade instructions](docs/reference.md#database-initialization-and-upgrades).
+[upgrade instructions](REFERENCE.md#initialization-and-upgrades).
 
 ## [0.4.0] - 2026-09-05
 
@@ -121,7 +124,7 @@ restart connections and the fleet. Use this pause for the initial schema change.
 
 ### Added
 
-- `docs/reference.md`: reverse proxy example, the stored input representation, and the procedure
+- `REFERENCE.md`: reverse proxy example, the stored input representation, and the procedure
   for rolling out an incompatible task contract (versioned names).
 
 ## [0.3.0] - 2026-08-29

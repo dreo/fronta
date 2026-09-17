@@ -95,6 +95,8 @@ convention = "google"
 strict = true
 packages = ["fronta"]
 mypy_path = "src"
+# The sandbox uses Linux-only stdlib APIs (pidfds); check them the same way on every host.
+platform = "linux"
 
 [tool.importlinter]
 root_package = "fronta"
@@ -113,9 +115,6 @@ layers = [
     "fronta.codec",
     "fronta.model | fronta.config | fronta.errors",
 ]
-
-[tool.deptry]
-# Add per-rule ignores only with a justifying comment.
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

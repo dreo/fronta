@@ -52,7 +52,6 @@ SCHEMA_VERSION = 1
 
 WAKE_CHANNEL = "fronta_wake"
 CANCEL_CHANNEL = "fronta_cancel"
-FEED_CHANNEL = "fronta_feed"
 
 
 class Backfill(TypedDict):
@@ -534,8 +533,7 @@ async def claim(  # noqa: PLR0913  # distinct claim inputs
             },
             binary=True,
         )
-        rows = [_task(rec) for rec in await cur.fetchall()]
-        return rows
+        return [_task(rec) for rec in await cur.fetchall()]
 
 
 async def heartbeat(

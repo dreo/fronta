@@ -112,7 +112,7 @@ class TaskContext[StateT]:
         if not stored:
             self._attempt.stop(Cause.LOST)
 
-    async def enqueue[I: BaseModel](  # noqa: PLR0913  # public signature fixed by SPEC.md
+    async def enqueue[I: BaseModel](  # noqa: PLR0913  # the public enqueue signature
         self,
         task: TaskDefinition[I, Any],
         input: I,

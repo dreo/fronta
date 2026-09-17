@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import ctypes
-import errno
 import json
 import os
 import signal
@@ -32,25 +30,9 @@ SANDBOX_ENV = "FRONTA_SANDBOX_ID"
 WORKER_ENV = "FRONTA_WORKER_ID"
 PROBE_OUTPUT = b"FRONTA_SANDBOX_OK\n"
 _MERGED_USR_DIRS = ("/bin", "/sbin", "/lib", "/lib64", "/lib32", "/libx32")
-_SYS_PIDFD_OPEN = 434
-_SYS_PIDFD_SEND_SIGNAL = 424
 _STATUS_LINE_TIMEOUT_S = 30.0
 _STDERR_CAP = 64 * 1024
 _WORKER_ID_PARTS = 3  # host:pid:starttime
-
-_libc: ctypes.CDLL | None = None
-"""Loaded on first use: importing Fronta must work on any platform; only running sandboxed
-processes needs Linux (`require_linux()` guards the entry points)."""
-
-
-def _syscall(number: int, *args: object) -> int:
-    global _libc  # noqa: PLW0603  # lazy, process-wide handle
-    libc = _libc
-    if libc is None:
-        libc = ctypes.CDLL(None, use_errno=True)
-        libc.syscall.restype = ctypes.c_long
-        _libc = libc
-    return int(libc.syscall(number, *args))
 
 
 def require_linux() -> None:
@@ -100,7 +82,7 @@ def is_worker_alive(worker: str) -> bool | None:
 
 
 class Pidfd:
-    """A pidfd (raw syscalls: this CPython build may lack `os.pidfd_open`).
+    """A process handle that a recycled pid can never alias.
 
     `close()` while `wait_exit()` is in flight is deferred until the wait ends, so the descriptor
     number can never be recycled under a registered reader.
@@ -114,36 +96,20 @@ class Pidfd:
     @classmethod
     def open(cls, pid: int) -> Pidfd | None:
         """None when the process is already gone (ESRCH)."""
-        if hasattr(os, "pidfd_open"):
-            try:
-                return cls(os.pidfd_open(pid))
-            except ProcessLookupError:
-                return None
-        fd = _syscall(_SYS_PIDFD_OPEN, ctypes.c_int(pid), ctypes.c_uint(0))
-        if fd < 0:
-            err = ctypes.get_errno()
-            if err == errno.ESRCH:
-                return None
-            raise OSError(err, os.strerror(err))
-        return cls(int(fd))
+        try:
+            return cls(os.pidfd_open(pid))
+        except ProcessLookupError:
+            return None
 
     def send_signal(self, sig: signal.Signals) -> bool:
         """False when the process already exited (or the pidfd is closed)."""
         if self.fd < 0:
             return False
-        if hasattr(signal, "pidfd_send_signal"):
-            try:
-                signal.pidfd_send_signal(self.fd, sig)
-            except ProcessLookupError:
-                return False
-            return True
-        rc = _syscall(_SYS_PIDFD_SEND_SIGNAL, ctypes.c_int(self.fd), ctypes.c_int(sig), None, 0)
-        if rc == 0:
-            return True
-        err = ctypes.get_errno()
-        if err == errno.ESRCH:
+        try:
+            signal.pidfd_send_signal(self.fd, sig)
+        except ProcessLookupError:
             return False
-        raise OSError(err, os.strerror(err))
+        return True
 
     async def wait_exit(self, timeout_s: float) -> bool:
         """True once the process has exited (pidfd readable); False on timeout."""
