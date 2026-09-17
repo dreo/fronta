@@ -1,6 +1,6 @@
 [project]
 name = "fronta"
-version = "0.5.0"
+version = "0.6.0"
 description = "Distributed task queue for asyncio tasks and sandboxed processes"
 readme = "README.md"
 authors = [
@@ -122,3 +122,4 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
 testpaths = ["tests"]
+markers = ["slow: randomized sustained-load checks (50 seeds on Linux, 10 elsewhere)"]

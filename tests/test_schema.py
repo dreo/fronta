@@ -30,6 +30,35 @@ async def test_init_is_idempotent(conn):
         "task_types",
         "tasks",
     ]
+    assert await (
+        await conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema='fronta' AND table_name='subscriptions' AND column_name='backfill'"
+        )
+    ).fetchall() == [("jsonb", "YES")]
+
+
+async def test_db_init_adds_backfill_without_a_schema_version_change(conn, dsn):
+    await conn.execute("ALTER TABLE fronta.subscriptions DROP COLUMN backfill")
+    version = await (
+        await conn.execute("SELECT value FROM fronta.meta WHERE key='schema_version'")
+    ).fetchone()
+    try:
+        for _ in range(2):
+            result = await asyncio.to_thread(CliRunner().invoke, main, ["db", "init", "--dsn", dsn])
+            assert result.exit_code == 0, result.output
+            assert "ready" in result.output
+        assert (
+            await (
+                await conn.execute("SELECT value FROM fronta.meta WHERE key='schema_version'")
+            ).fetchone()
+            == version
+        )
+        assert (
+            await (await conn.execute("SELECT backfill FROM fronta.subscriptions")).fetchall() == []
+        )
+    finally:
+        await store.init_schema(conn)
 
 
 @pytest.mark.parametrize("first_table", ["task_types", "events"])
@@ -73,26 +102,6 @@ def test_db_init_reports_connection_errors():
     )
     assert result.exit_code != 0
     assert "database error" in result.output
-
-
-async def test_init_refreshes_a_warmed_legacy_function_after_adding_columns(conn, dsn):
-    task_id = await store.enqueue(conn, NewTask("legacy", "{}", Policy()))
-    await conn.execute("ALTER TABLE fronta.tasks DROP COLUMN metadata")
-    await conn.execute(
-        "CREATE FUNCTION fronta.claim_v0() RETURNS SETOF fronta.tasks LANGUAGE plpgsql "
-        "AS $$ BEGIN RETURN QUERY SELECT * FROM fronta.tasks; END $$"
-    )
-    try:
-        async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as legacy:
-            assert await (await legacy.execute("SELECT id FROM fronta.claim_v0()")).fetchall() == [
-                (task_id,)
-            ]
-            await store.init_schema(conn)
-            assert await (await legacy.execute("SELECT id FROM fronta.claim_v0()")).fetchall() == [
-                (task_id,)
-            ]
-    finally:
-        await store.init_schema(conn, prune=True)
 
 
 @pytest.mark.parametrize(

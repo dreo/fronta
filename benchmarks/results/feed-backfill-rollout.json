@@ -1,0 +1,43 @@
+{
+  "created_at": "2026-09-17T09:07:09.670504+00:00",
+  "phase": "backfill-rollout",
+  "source_sha256": "a95a883e4cae5a9df5f605eaf144588045ebe3c5ac644242d9f02feeba10e28e",
+  "python": "3.13.14 (main, Jun 10 2026, 12:24:04) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "psycopg": "3.3.4",
+  "postgres": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+  "result": {
+    "passed": true,
+    "legacy": "git archive v0.5.0",
+    "schema_version": "1",
+    "workers_paused_for_upgrade": false,
+    "submitted": 10100,
+    "delivered_ids": 10100,
+    "missing": 0,
+    "mixed_workers": [
+      {
+        "worker": "ondrejovo:6421:nonce-adc5d939b073416cbcdda3a23503a02d",
+        "n": 2938
+      },
+      {
+        "worker": "ondrejovo:6425:nonce-73979bed8bd549d983e99c97b7fcdf80",
+        "n": 2398
+      },
+      {
+        "worker": "ondrejovo:6428:nonce-d70283bc4e14499888df310470f47741",
+        "n": 1669
+      },
+      {
+        "worker": "ondrejovo:6423:nonce-f2e0cc68311f4d8389a931561914acff",
+        "n": 3095
+      }
+    ],
+    "worker_exit_codes": [
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "passed": true
+}

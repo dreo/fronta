@@ -111,14 +111,4 @@ ALTER TABLE fronta.events SET (autovacuum_vacuum_scale_factor = 0.01,
 
 ALTER TABLE fronta.task_types ADD COLUMN IF NOT EXISTS paused boolean NOT NULL DEFAULT false;
 ALTER TABLE fronta.tasks ADD COLUMN IF NOT EXISTS metadata jsonb;
-
--- Refresh legacy PL/pgSQL result descriptors after adding task columns.
-DO $fronta$
-DECLARE definition text;
-BEGIN
-    FOR definition IN SELECT pg_get_functiondef(p.oid) FROM pg_proc p
-        JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = 'fronta' AND (proname = 'claim_tasks' OR proname ~ '^claim_v[0-9]+$')
-    LOOP EXECUTE definition; END LOOP;
-END;
-$fronta$;
+ALTER TABLE fronta.subscriptions ADD COLUMN IF NOT EXISTS backfill jsonb;

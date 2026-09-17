@@ -17,3 +17,14 @@ def test_db_init_reports_invalid_settings_without_a_traceback(monkeypatch):
     assert result.exit_code == 1
     assert "invalid settings" in result.output
     assert "Traceback" not in result.output
+
+
+def test_db_sql_includes_additive_backfill_once():
+    result = CliRunner().invoke(main, ["db", "sql"])
+    assert result.exit_code == 0
+    assert (
+        result.output.count(
+            "ALTER TABLE fronta.subscriptions ADD COLUMN IF NOT EXISTS backfill jsonb;"
+        )
+        == 1
+    )

@@ -1,13 +1,29 @@
 """Transactional feed delivery, rollback, filtering and competing consumers."""
 
 import asyncio
+import contextlib
+import sys
+from datetime import timedelta
 
 import psycopg
 import pytest
 
-from fronta import State, TaskNotFound, Worker, get_task, store, subscribe, unsubscribe
+from fronta import (
+    ConfigurationError,
+    State,
+    TaskNotFound,
+    Worker,
+    get_task,
+    store,
+    subscribe,
+    unsubscribe,
+)
+from fronta import (
+    feed as feed_module,
+)
 from fronta.model import Completion, NewTask, Policy
 from tests.conftest import wait_until
+from tests.stress.backfill import feed_backfill_soak
 from tests.workers import In, sleep_task
 
 
@@ -320,3 +336,458 @@ async def test_purge_warns_for_stale_unacknowledged_events(conn, settings, run_w
 async def test_get_task_unknown_raises(conn):
     with pytest.raises(TaskNotFound):
         await get_task(999, conn=conn)
+
+
+async def retained(conn, count=20, *, states=("succeeded",), types=("sleep",)):
+    """Bulk snapshots with every state/type combination and nontrivial attempt numbers."""
+    return await (
+        await conn.execute(
+            "INSERT INTO fronta.tasks (type, state, input, attempt, max_attempts, "
+            "attempt_timeout_s, backoff_base_s, backoff_factor, backoff_cap_s, finished_at) "
+            "SELECT (%s::text[])[1 + ((g-1) / %s) %% %s], "
+            "(%s::text[])[1 + (g-1) %% %s], '{}', g %% 3, 3, 30, 1, 2, 3600, now() "
+            "FROM generate_series(1, %s) g RETURNING id, type, state, attempt",
+            (list(types), len(states), len(types), list(states), len(states), count),
+        )
+    ).fetchall()
+
+
+def snapshots(rows):
+    return {(task_id, state, attempt) for task_id, _typ, state, attempt in rows}
+
+
+async def register(settings, name="workflow", **kwargs):
+    async with subscribe(name, settings=settings, **kwargs):
+        pass
+
+
+@contextlib.asynccontextmanager
+async def paused_backfill(monkeypatch, *, after=1):
+    """Pause a consumer after a committed chunk, leaving other consumers free to resume."""
+    entered, release = asyncio.Event(), asyncio.Event()
+    results = []
+    original = store.backfill_chunk
+
+    async def chunk(*args):
+        result = await original(*args)
+        results.append(result)
+        if len(results) == after:
+            entered.set()
+            await release.wait()
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(feed_module, "_BACKFILL_CHUNK", 7)
+        patch.setattr(store, "backfill_chunk", chunk)
+        try:
+            yield entered, release, results
+        finally:
+            release.set()
+
+
+async def pending_marker(conn, name="workflow"):
+    row = await (
+        await conn.execute("SELECT backfill FROM fronta.subscriptions WHERE name=%s", (name,))
+    ).fetchone()
+    assert row is not None
+    return row[0]
+
+
+@pytest.mark.parametrize("backfill", [None, False])
+async def test_backfill_off_matches_release_semantics(conn, dsn, settings, monkeypatch, backfill):
+    await retained(conn, 1)
+    original = store.register_subscription
+
+    async def inspected(c, *args):
+        locks = await (
+            await conn.execute(
+                "SELECT mode FROM pg_locks WHERE pid=%s "
+                "AND relation='fronta.subscriptions'::regclass",
+                (c.info.backend_pid,),
+            )
+        ).fetchall()
+        assert ("ExclusiveLock",) not in locks
+        return await original(c, *args)
+
+    monkeypatch.setattr(store, "register_subscription", inspected)
+    # Ordinary registration neither locks the table nor waits for older transactions.
+    async with await psycopg.AsyncConnection.connect(dsn) as holder:
+        await holder.execute("SELECT * FROM fronta.subscriptions FOR KEY SHARE")
+        await asyncio.wait_for(register(settings, backfill=backfill), 1)
+    assert await backlog(conn) == []
+
+
+async def test_backfill_true_projects_matching_rows(conn, settings):
+    rows = await retained(conn, 10, states=list(State), types=("sleep", "other"))
+    await register(settings, "all", states=list(State), backfill=True)
+    await register(settings, "some", states=[State.SUCCEEDED], types=["sleep"], backfill=True)
+    assert set(await backlog(conn, "all")) == snapshots(rows)
+    expected = [row for row in rows if row[1:3] == ("sleep", "succeeded")]
+    assert set(await backlog(conn, "some")) == snapshots(expected)
+
+
+@pytest.mark.parametrize("window", [3600, 3600.0, timedelta(hours=1)])
+async def test_backfill_window_bounds_terminal_rows(conn, settings, window):
+    rows = await retained(conn, 10, states=list(State))
+    await conn.execute(
+        "UPDATE fronta.tasks SET created_at=now()-interval '3h', "
+        "finished_at=now()-CASE WHEN id <= 5 THEN interval '3h' ELSE interval '30m' END"
+    )
+    await register(settings, states=list(State), backfill=window)
+    expected = [r for r in rows if r[0] > 5 or r[2] in ("queued", "running")]
+    assert set(await backlog(conn)) == snapshots(expected)
+
+
+async def test_zero_window_is_enabled_and_empty_states_clear_marker(conn, settings):
+    rows = await retained(conn, 5, states=list(State))
+    await register(settings, states=list(State), backfill=0)
+    assert set(await backlog(conn)) == snapshots([r for r in rows if r[2] in ("queued", "running")])
+    await register(settings, "empty", states=[], backfill=True)
+    assert await backlog(conn, "empty") == []
+    assert await pending_marker(conn, "empty") is None
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_existing_name_never_backfills(conn, settings):
+    await retained(conn, 3)
+    async with subscribe("workflow", settings=settings, backfill=True) as feed:
+        await (await pull(feed)).ack()
+    task_id = await seed(conn)
+    row = await claim(conn)
+    await store.complete(conn, [Completion(task_id, row.token, "succeed", "null")])
+    expected = await backlog(conn)
+    assert expected == [(task_id, "succeeded", 1)]
+    for backfill in (None, False, True, 3600):
+        await register(settings, backfill=backfill)
+        assert await backlog(conn) == expected
+    await register(settings, states=list(State), types=["other"], backfill=True)
+    assert await backlog(conn) == expected
+    await unsubscribe("workflow")
+    await register(settings, backfill=True)
+    assert len(await backlog(conn)) == 4
+
+
+async def test_backfill_chunks_and_marker_lifecycle(conn, settings, monkeypatch):
+    rows = await retained(conn)
+    async with (
+        paused_backfill(monkeypatch) as (entered, release, results),
+        asyncio.TaskGroup() as tg,
+    ):
+        creating = tg.create_task(register(settings, states=[State.SUCCEEDED], backfill=True))
+        await asyncio.wait_for(entered.wait(), 3)
+        assert not creating.done()
+        marker = await pending_marker(conn)
+        assert marker["generation"]
+        assert marker["since"] is None
+        assert marker["pending"] == {"succeeded": 7}
+        assert (await store.stats(conn))["subscriptions"][0]["backfill_pending"] is True
+        assert len(await backlog(conn)) == 7
+        release.set()
+    assert results == [(7, True), (7, True), (6, False)]
+    assert set(await backlog(conn)) == snapshots(rows)
+    assert len(await backlog(conn)) == len(rows)
+    assert await pending_marker(conn) is None
+    assert (await store.stats(conn))["subscriptions"][0]["backfill_pending"] is False
+
+
+@pytest.mark.parametrize("resume", [None, False, True, 0])
+async def test_backfill_resumes_after_connection_loss(conn, settings, monkeypatch, resume):
+    rows = await retained(conn)
+    original = store.backfill_chunk
+    monkeypatch.setattr(feed_module, "_BACKFILL_CHUNK", 7)
+
+    async def disconnect(c, *args):
+        result = await original(c, *args)
+        await c.close()
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "backfill_chunk", disconnect)
+        with pytest.raises(psycopg.OperationalError):
+            await register(settings, states=[State.SUCCEEDED], backfill=3600)
+    marker = await pending_marker(conn)
+    assert marker["pending"] == {"succeeded": 7}
+    assert marker["since"] is not None
+    # Make a remaining row older than the persisted boundary: a resume with True must still
+    # apply the original window; a resume with zero must not move that boundary to now.
+    await conn.execute(
+        "UPDATE fronta.tasks SET finished_at=%s::timestamptz-interval '1s' WHERE id=20",
+        (marker["since"],),
+    )
+    await register(settings, backfill=resume)
+    assert set(await backlog(conn)) == snapshots(rows[:-1])
+    assert len(await backlog(conn)) == 19
+    assert await pending_marker(conn) is None
+
+
+async def test_concurrent_creators_backfill_once(conn, settings, monkeypatch):
+    rows = await retained(conn, 50)
+    original = store.register_subscription
+    both_read, reads = asyncio.Event(), 0
+
+    async def read(*args):
+        nonlocal reads
+        if reads < 2:
+            reads += 1
+            if reads == 2:
+                both_read.set()
+            await both_read.wait()
+        return await original(*args)
+
+    monkeypatch.setattr(store, "register_subscription", read)
+    async with contextlib.AsyncExitStack() as stack:
+        one, two = await asyncio.gather(
+            *(
+                stack.enter_async_context(
+                    subscribe("workflow", settings=settings, backfill=True, batch_size=25)
+                )
+                for _ in range(2)
+            )
+        )
+        assert set(await backlog(conn)) == snapshots(rows)
+        assert len(await backlog(conn)) == 50
+        first, second = await asyncio.gather(pull(one), pull(two))
+        assert {e.id for e in first.events}.isdisjoint(e.id for e in second.events)
+        await first.ack()
+        await second.ack()
+        assert await backlog(conn) == []
+
+
+async def test_concurrent_resumers_do_not_duplicate(conn, settings, monkeypatch):
+    rows = await retained(conn)
+    async with paused_backfill(monkeypatch) as (entered, release, _), asyncio.TaskGroup() as tg:
+        tg.create_task(register(settings, states=[State.SUCCEEDED], backfill=True))
+        await asyncio.wait_for(entered.wait(), 3)
+        await asyncio.gather(register(settings), register(settings))
+        release.set()
+    assert set(await backlog(conn)) == snapshots(rows)
+    assert len(await backlog(conn)) == len(rows)
+    assert await pending_marker(conn) is None
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_unsubscribe_during_backfill_leaves_no_orphans(conn, settings, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="fronta.feed")
+    await retained(conn)
+    entered, release = asyncio.Event(), asyncio.Event()
+    execute = psycopg.AsyncConnection.execute
+    monkeypatch.setattr(feed_module, "_BACKFILL_CHUNK", 7)
+
+    async def paused(c, query, *args, **kwargs):
+        if isinstance(query, str) and query.startswith("UPDATE fronta.subscriptions SET backfill"):
+            entered.set()
+            await release.wait()
+        return await execute(c, query, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg.AsyncConnection, "execute", paused)
+
+    async def consumer():
+        async with subscribe(
+            "workflow", settings=settings, states=[State.SUCCEEDED], backfill=True
+        ) as feed:
+            with pytest.raises(StopAsyncIteration):
+                await pull(feed)
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(consumer())
+        await asyncio.wait_for(entered.wait(), 3)
+        removing = tg.create_task(unsubscribe("workflow"))
+
+        async def waiting():
+            return (
+                await (
+                    await conn.execute(
+                        "SELECT EXISTS (SELECT FROM pg_stat_activity "
+                        "WHERE datname=current_database() AND wait_event_type='Lock' "
+                        "AND query LIKE 'DELETE FROM fronta.subscriptions%')"
+                    )
+                ).fetchone()
+            )[0]
+
+        try:
+            await wait_until(waiting)
+            assert not removing.done()
+        finally:
+            release.set()
+    assert await (await conn.execute("SELECT name FROM fronta.subscriptions")).fetchall() == []
+    assert await backlog(conn) == []
+    assert "backfill stopped name=workflow: registration removed" in caplog.text
+    assert "backfill finished name=workflow" not in caplog.text
+
+
+async def test_backfilled_events_get_fresh_retention(conn, settings):
+    await retained(conn, 3)
+    await conn.execute("UPDATE fronta.tasks SET finished_at=now()-interval '2h'")
+    await register(settings, backfill=True)
+    assert await store.purge_events(conn, 3600, 1000) == []
+    assert len(await backlog(conn)) == 3
+    await conn.execute("UPDATE fronta.events SET created_at=now()-interval '2h'")
+    assert await store.purge_events(conn, 3600, 1000) == [("workflow", 3)]
+    assert await backlog(conn) == []
+
+
+@pytest.mark.parametrize("backfill", [None, False, True, 0])
+async def test_missing_column_is_actionable(conn, settings, backfill):
+    await conn.execute("ALTER TABLE fronta.subscriptions DROP COLUMN backfill")
+    try:
+        with pytest.raises(ConfigurationError, match="fronta db init"):
+            await register(settings, backfill=backfill)
+        assert await (await conn.execute("SELECT name FROM fronta.subscriptions")).fetchall() == []
+    finally:
+        await store.init_schema(conn)
+    await register(settings, states=[State.QUEUED], backfill=backfill)
+    task_id = await seed(conn)
+    assert await backlog(conn) == [(task_id, "queued", 0)]
+    assert (await store.stats(conn))["subscriptions"][0]["backfill_pending"] is False
+
+
+@pytest.mark.parametrize(
+    "backfill",
+    [
+        -1,
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        timedelta(days=-1),
+        "1",
+        [],
+        object(),
+        pytest.param(-(10**1000), id="large-negative"),
+        pytest.param(10**1000, id="large-positive"),
+    ],
+)
+async def test_backfill_argument_validation(monkeypatch, backfill):
+    async def unexpected_connect(*_args, **_kwargs):
+        pytest.fail("invalid backfill opened a connection")
+
+    monkeypatch.setattr(psycopg.AsyncConnection, "connect", unexpected_connect)
+    with pytest.raises(ValueError, match="backfill"):
+        async with subscribe("invalid", backfill=backfill):
+            pytest.fail("invalid backfill accepted")
+
+
+@pytest.mark.parametrize("types", [[], None, ["a"]])
+async def test_backfill_type_filters(conn, settings, types):
+    rows = await retained(conn, types=("a", "b"))
+    await register(settings, types=types, backfill=True)
+    assert set(await backlog(conn)) == snapshots(
+        [r for r in rows if types is None or r[1] in types]
+    )
+
+
+async def test_backfill_reads_current_types_between_chunks(conn, settings, monkeypatch):
+    rows = await retained(conn, types=("a", "b"))
+    async with paused_backfill(monkeypatch) as (entered, release, _), asyncio.TaskGroup() as tg:
+        tg.create_task(register(settings, states=[State.SUCCEEDED], backfill=True))
+        await asyncio.wait_for(entered.wait(), 3)
+        await register(settings, types=["b"])
+        release.set()
+    assert set(await backlog(conn)) == snapshots([r for r in rows if r[0] <= 7 or r[1] == "b"])
+
+
+async def test_backfill_statement_timeout_rolls_back_events_and_marker(conn, settings, monkeypatch):
+    rows = await retained(conn)
+    monkeypatch.setattr(feed_module, "_BACKFILL_CHUNK", 7)
+    execute, updates = psycopg.AsyncConnection.execute, 0
+
+    async def timeout(c, query, *args, **kwargs):
+        nonlocal updates
+        if isinstance(query, str) and query.startswith("UPDATE fronta.subscriptions SET backfill"):
+            updates += 1
+            if updates == 2:
+                await execute(c, "SELECT pg_sleep(0.5)")
+        return await execute(c, query, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(psycopg.AsyncConnection, "execute", timeout)
+        with pytest.raises(psycopg.errors.QueryCanceled):
+            await register(
+                settings.model_copy(update={"statement_timeout_s": 0.1}),
+                states=[State.SUCCEEDED],
+                backfill=True,
+            )
+    marker = await pending_marker(conn)
+    assert marker["since"] is None
+    assert marker["pending"] == {"succeeded": 7}
+    assert set(await backlog(conn)) == snapshots(rows[:7])
+    await register(settings)
+    assert set(await backlog(conn)) == snapshots(rows)
+    assert len(await backlog(conn)) == len(rows)
+
+
+async def test_live_backfill_duplicates_have_distinct_sequences(conn, settings, monkeypatch):
+    old = await retained(conn, 1)
+    live_id = await seed(conn)
+    running = await claim(conn)
+    original = store.backfill_chunk
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def paused(*args):
+        entered.set()
+        await release.wait()
+        return await original(*args)
+
+    monkeypatch.setattr(store, "backfill_chunk", paused)
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(register(settings, states=[State.SUCCEEDED], backfill=True))
+        await asyncio.wait_for(entered.wait(), 3)
+        await store.complete(conn, [Completion(live_id, running.token, "succeed", "null")])
+        release.set()
+    events = await (
+        await conn.execute("SELECT task_id, state, attempt, seq FROM fronta.events ORDER BY seq")
+    ).fetchall()
+    assert len([e for e in events if e[0] == old[0][0]]) == 1
+    duplicate = [e for e in events if e[0] == live_id]
+    assert len(duplicate) == 2
+    assert {e[:3] for e in duplicate} == {(live_id, "succeeded", 1)}
+    assert duplicate[0][3] != duplicate[1][3]
+
+
+async def test_chunk_lock_allows_publishers_and_pullers(conn, settings, monkeypatch):
+    await retained(conn, 20)
+    live_id = await seed(conn)
+    running = await claim(conn)
+    entered, release = asyncio.Event(), asyncio.Event()
+    execute = psycopg.AsyncConnection.execute
+    updates = 0
+    monkeypatch.setattr(feed_module, "_BACKFILL_CHUNK", 7)
+
+    async def paused(c, query, *args, **kwargs):
+        nonlocal updates
+        if isinstance(query, str) and query.startswith("UPDATE fronta.subscriptions SET backfill"):
+            updates += 1
+            if updates == 2:
+                entered.set()
+                await release.wait()
+        return await execute(c, query, *args, **kwargs)
+
+    async with subscribe("workflow", settings=settings, states=[State.SUCCEEDED]) as feed:
+        # Simulate a previously interrupted consumer while another feed is already open.
+        await conn.execute(
+            "UPDATE fronta.subscriptions SET backfill="
+            '\'{"generation":"resumed","since":null,"pending":{"succeeded":0}}\'::jsonb'
+        )
+        monkeypatch.setattr(psycopg.AsyncConnection, "execute", paused)
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(register(settings))
+            await asyncio.wait_for(entered.wait(), 3)
+            try:
+                assert await asyncio.wait_for(
+                    store.complete(conn, [Completion(live_id, running.token, "succeed", "null")]), 1
+                )
+                batch = await asyncio.wait_for(anext(feed), 1)
+                assert len(batch.events) == 8  # seven committed snapshots plus the live event
+                assert live_id in {e.id for e in batch.events}
+                await asyncio.wait_for(batch.ack(), 1)
+            finally:
+                release.set()
+    assert len(await backlog(conn)) == 14  # remaining snapshots, including the concurrent live row
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("seed_value", range(50 if sys.platform == "linux" else 10))
+async def test_creating_registration_has_no_gap_under_load(
+    conn, settings, seed_value, record_property
+):
+    result = await feed_backfill_soak(conn, settings, seed_value)
+    record_property("backfill_duplicates", result["duplicates"])

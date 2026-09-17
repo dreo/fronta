@@ -1,0 +1,473 @@
+{
+  "capacity_report": {
+    "created_at": "2026-09-17T13:34:42.007806+00:00",
+    "phase": "backfill",
+    "source_sha256": "3564c01b5f8e4b5c6a8fd063e60ace752a82c0c0687a56a5c118d31308dada06",
+    "python": "3.13.13 (main, May 10 2026, 19:26:54) [Clang 22.1.3 ]",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "psycopg": "3.3.4",
+    "postgres": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+    "durability": [
+      {
+        "name": "fsync",
+        "setting": "on"
+      },
+      {
+        "name": "full_page_writes",
+        "setting": "on"
+      },
+      {
+        "name": "max_wal_size",
+        "setting": "4096"
+      },
+      {
+        "name": "shared_buffers",
+        "setting": "262144"
+      },
+      {
+        "name": "synchronous_commit",
+        "setting": "on"
+      }
+    ],
+    "result": {
+      "config": {
+        "name": "feed",
+        "workers": 8,
+        "concurrency": 256,
+        "producers": 4,
+        "clients": 8,
+        "jobs": 180000,
+        "live_enqueue": true,
+        "subscription": true,
+        "rate_s": 750.0,
+        "timeout_s": 600,
+        "identity": true
+      },
+      "retained": 1000000,
+      "live_jobs": 180000,
+      "target_completion_rate_s": 3000,
+      "backfill_seconds": 6.943689271982294,
+      "backfilled_rows": 1033467,
+      "chunks": 209,
+      "backfill_rows_per_s": 148835.43308454592,
+      "drain_seconds": 49.403002895007376,
+      "events": 1200687,
+      "duplicates": 20687,
+      "missing": 0,
+      "unexpected": 0,
+      "claim_10s": {
+        "n": 7483,
+        "mean_ms": 5.14987297042649,
+        "p50_ms": 5.0214549992233515,
+        "p95_ms": 7.336031005252153,
+        "p99_ms": 8.534018998034298,
+        "max_ms": 85.0214270176366
+      },
+      "worker_metrics": {
+        "operations": {
+          "claim": {
+            "n": 45287,
+            "mean_ms": 12.545649605274837,
+            "p50_ms": 6.427123997127637,
+            "p95_ms": 37.42468400741927,
+            "p99_ms": 93.76750700175762,
+            "max_ms": 199.0157359978184
+          },
+          "complete": {
+            "n": 44559,
+            "mean_ms": 7.953925602796034,
+            "p50_ms": 4.815438005607575,
+            "p95_ms": 27.0710340118967,
+            "p99_ms": 58.28830800601281,
+            "max_ms": 117.80954099958763
+          }
+        },
+        "empty_claims": 89962,
+        "batch_sizes": {
+          "claim": {
+            "calls": 135296,
+            "items": 285000,
+            "mean": 2.10649243140965
+          },
+          "complete": {
+            "calls": 44559,
+            "items": 285000,
+            "mean": 6.396014273210799
+          }
+        },
+        "event_loop_lag": {
+          "n": 15451,
+          "mean_ms": 0.7673154032299733,
+          "p50_ms": 0.489485001889986,
+          "p95_ms": 1.8212630122434321,
+          "p99_ms": 3.5870350140612546,
+          "max_ms": 98.80433099460788
+        },
+        "worker_cpu_s": 329.664189,
+        "worker_cpu_cores": 3.3416513923951734,
+        "worker_peak_rss_sum_bytes": 972095488,
+        "pool_counters": {
+          "requests_num": 179857,
+          "requests_queued": 30,
+          "requests_wait_ms": 117,
+          "usage_ms": 1005749
+        },
+        "completion_timeline": [
+          {
+            "from_s": 0,
+            "jobs": 27722,
+            "tasks_per_s": 2772.2
+          },
+          {
+            "from_s": 10,
+            "jobs": 30012,
+            "tasks_per_s": 3001.2
+          },
+          {
+            "from_s": 20,
+            "jobs": 29974,
+            "tasks_per_s": 2997.4
+          },
+          {
+            "from_s": 30,
+            "jobs": 30009,
+            "tasks_per_s": 3000.9
+          },
+          {
+            "from_s": 40,
+            "jobs": 29989,
+            "tasks_per_s": 2998.9
+          },
+          {
+            "from_s": 50,
+            "jobs": 30000,
+            "tasks_per_s": 3000.0
+          },
+          {
+            "from_s": 60,
+            "jobs": 23594,
+            "tasks_per_s": 2359.4
+          },
+          {
+            "from_s": 70,
+            "jobs": 29713,
+            "tasks_per_s": 2971.3
+          },
+          {
+            "from_s": 80,
+            "jobs": 29888,
+            "tasks_per_s": 2988.8
+          },
+          {
+            "from_s": 90,
+            "jobs": 24099,
+            "tasks_per_s": 2785.0211666003847
+          }
+        ]
+      },
+      "worker_exits": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "worker_errors": [],
+      "bad_tasks": 0,
+      "producer_metrics": [
+        {
+          "jobs": 45000,
+          "elapsed_s": 60.00908742801403,
+          "cpu_s": 41.845330000000004,
+          "identity": {
+            "count": 45000,
+            "sum": 49051363292,
+            "xor": 278875240765503116173555081326552080543
+          }
+        },
+        {
+          "jobs": 45000,
+          "elapsed_s": 60.00576467299834,
+          "cpu_s": 41.716955,
+          "identity": {
+            "count": 45000,
+            "sum": 49049318826,
+            "xor": 287226452730371420037422483839122869481
+          }
+        },
+        {
+          "jobs": 45000,
+          "elapsed_s": 60.013321204984095,
+          "cpu_s": 41.938551000000004,
+          "identity": {
+            "count": 45000,
+            "sum": 49049607414,
+            "xor": 90059184056681517603469687726359255470
+          }
+        },
+        {
+          "jobs": 45000,
+          "elapsed_s": 60.01897690599435,
+          "cpu_s": 42.023706000000004,
+          "identity": {
+            "count": 45000,
+            "sum": 49049800468,
+            "xor": 208456567767071629162410290845179810794
+          }
+        }
+      ],
+      "storage": {
+        "before": {
+          "heap_bytes": 0,
+          "index_bytes": 16384,
+          "index_main_bytes": 16384,
+          "n_live_tup": 0,
+          "n_dead_tup": 0,
+          "vacuum_count": 0,
+          "autovacuum_count": 0
+        },
+        "after_backfill": {
+          "heap_bytes": 89112576,
+          "index_bytes": 41836544,
+          "index_main_bytes": 41836544,
+          "n_live_tup": 934769,
+          "n_dead_tup": 0,
+          "vacuum_count": 0,
+          "autovacuum_count": 0
+        },
+        "after_vacuum": [
+          {
+            "heap_bytes": 97452032,
+            "index_bytes": 45907968,
+            "index_main_bytes": 45850624,
+            "n_live_tup": 0,
+            "n_dead_tup": 491,
+            "vacuum_count": 1,
+            "autovacuum_count": 1
+          },
+          {
+            "heap_bytes": 97452032,
+            "index_bytes": 45907968,
+            "index_main_bytes": 45850624,
+            "n_live_tup": 0,
+            "n_dead_tup": 491,
+            "vacuum_count": 2,
+            "autovacuum_count": 1
+          }
+        ],
+        "stable_after_two_vacuums": false,
+        "returned_to_initial_bytes": false
+      },
+      "contention": {
+        "start": 150232.894617283,
+        "held_until": 150262.921616265,
+        "seconds": 30.104416146001313,
+        "poll_interval_s": 0.25,
+        "poll_count": 120,
+        "poll_total_s": 0.25970847287680954,
+        "poll_mean_ms": 2.164237273973413,
+        "poll_max_ms": 6.604104011785239,
+        "passed": true,
+        "completions_per_5s": [
+          14894,
+          14876,
+          14964,
+          14884,
+          14919,
+          14955
+        ],
+        "worker_metrics_while_waiting": {
+          "operations": {
+            "claim": {
+              "n": 4924,
+              "mean_ms": 42.45287484308895,
+              "p50_ms": 32.89429098367691,
+              "p95_ms": 102.02463300083764,
+              "p99_ms": 119.43750799400732,
+              "max_ms": 199.0157359978184
+            },
+            "complete": {
+              "n": 4920,
+              "mean_ms": 25.872932583492577,
+              "p50_ms": 19.635920005384833,
+              "p95_ms": 66.78491100319661,
+              "p99_ms": 84.90991301368922,
+              "max_ms": 109.4729449832812
+            }
+          },
+          "empty_claims": 2679,
+          "batch_sizes": {
+            "claim": {
+              "calls": 135296,
+              "items": 285000,
+              "mean": 2.10649243140965
+            },
+            "complete": {
+              "calls": 44559,
+              "items": 285000,
+              "mean": 6.396014273210799
+            }
+          },
+          "event_loop_lag": {
+            "n": 4716,
+            "mean_ms": 0.9140942518628827,
+            "p50_ms": 0.5165340146049829,
+            "p95_ms": 2.1805299795232687,
+            "p99_ms": 5.851401004474607,
+            "max_ms": 98.80433099460788
+          },
+          "worker_cpu_s": 69.47529899999999,
+          "worker_cpu_cores": 2.3137609936187427,
+          "worker_peak_rss_sum_bytes": 972095488,
+          "pool_counters": {
+            "requests_num": 12447,
+            "requests_queued": 0,
+            "requests_wait_ms": 0,
+            "usage_ms": 357599
+          },
+          "completion_timeline": [
+            {
+              "from_s": 0,
+              "jobs": 29750,
+              "tasks_per_s": 2975.0
+            },
+            {
+              "from_s": 10,
+              "jobs": 29848,
+              "tasks_per_s": 2984.8
+            },
+            {
+              "from_s": 20,
+              "jobs": 29874,
+              "tasks_per_s": 2987.4
+            },
+            {
+              "from_s": 30,
+              "jobs": 170,
+              "tasks_per_s": 6296.533697052658
+            }
+          ]
+        }
+      },
+      "passed": false
+    },
+    "passed": false
+  },
+  "vacuum_observations": [
+    {
+      "before": [
+        [
+          3213,
+          "",
+          "active",
+          "1189702",
+          "0:00:01.208750",
+          "autovacuum: VACUUM ANALYZE fronta.tasks"
+        ]
+      ],
+      "notices": [
+        {
+          "message": "vacuuming \"fronta_acceptance_a5188a81.fronta.events\"",
+          "detail": null
+        },
+        {
+          "message": "launched 1 parallel vacuum worker for index cleanup (planned: 1)",
+          "detail": null
+        },
+        {
+          "message": "finished vacuuming \"fronta_acceptance_a5188a81.fronta.events\": index scans: 0\npages: 0 removed, 11896 remain, 65 scanned (0.55% of total), 0 eagerly scanned\ntuples: 491 removed, 0 remain, 0 are dead but not yet removable\nremovable cutoff: 1189703, which was 1 XIDs old when operation ended\nnew relfrozenxid: 1189703, which is 861 XIDs ahead of previous value\nnew relminmxid: 174710, which is 117 MXIDs ahead of previous value\nfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen\nvisibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)\nindex scan bypassed: 22 pages from table (0.18% of total) have 491 dead item identifiers\nindex \"events_subscription_seq_uidx\": pages: 4347 in total, 0 newly deleted, 4342 currently deleted, 4342 reusable\nindex \"events_created_at_idx\": pages: 1250 in total, 0 newly deleted, 1246 currently deleted, 1246 reusable\navg read rate: 0.000 MB/s, avg write rate: 3.422 MB/s\nbuffer usage: 11343 hits, 0 reads, 4 dirtied\nWAL usage: 30 records, 4 full page images, 35714 bytes, 0 buffers full\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s",
+          "detail": null
+        },
+        {
+          "message": "vacuuming \"fronta_acceptance_a5188a81.pg_toast.pg_toast_27722\"",
+          "detail": null
+        },
+        {
+          "message": "finished vacuuming \"fronta_acceptance_a5188a81.pg_toast.pg_toast_27722\": index scans: 0\npages: 0 removed, 0 remain, 0 scanned (100.00% of total), 0 eagerly scanned\ntuples: 0 removed, 0 remain, 0 are dead but not yet removable\nremovable cutoff: 1189704, which was 0 XIDs old when operation ended\nnew relfrozenxid: 1189704, which is 410909 XIDs ahead of previous value\nnew relminmxid: 174710, which is 74930 MXIDs ahead of previous value\nfrozen: 0 pages from table (100.00% of total) had 0 tuples frozen\nvisibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)\nindex scan not needed: 0 pages from table (100.00% of total) had 0 dead item identifiers removed\navg read rate: 78.914 MB/s, avg write rate: 0.000 MB/s\nbuffer usage: 25 hits, 1 reads, 0 dirtied\nWAL usage: 1 records, 0 full page images, 258 bytes, 0 buffers full\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s",
+          "detail": null
+        },
+        {
+          "message": "analyzing \"fronta.events\"",
+          "detail": null
+        },
+        {
+          "message": "\"events\": scanned 11896 of 11896 pages, containing 0 live rows and 491 dead rows; 0 rows in sample, 0 estimated total rows",
+          "detail": null
+        },
+        {
+          "message": "finished analyzing table \"fronta_acceptance_a5188a81.fronta.events\"\navg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\nbuffer usage: 11931 hits, 0 reads, 0 dirtied\nWAL usage: 0 records, 0 full page images, 0 bytes, 0 buffers full\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s",
+          "detail": null
+        }
+      ],
+      "after": [
+        [
+          3213,
+          "",
+          "active",
+          "1189702",
+          "0:00:01.228800",
+          "autovacuum: VACUUM ANALYZE fronta.tasks"
+        ]
+      ]
+    },
+    {
+      "before": [
+        [
+          3213,
+          "",
+          "active",
+          "1189702",
+          "0:00:01.230919",
+          "autovacuum: VACUUM ANALYZE fronta.tasks"
+        ]
+      ],
+      "notices": [
+        {
+          "message": "vacuuming \"fronta_acceptance_a5188a81.fronta.events\"",
+          "detail": null
+        },
+        {
+          "message": "launched 1 parallel vacuum worker for index cleanup (planned: 1)",
+          "detail": null
+        },
+        {
+          "message": "finished vacuuming \"fronta_acceptance_a5188a81.fronta.events\": index scans: 0\npages: 0 removed, 11896 remain, 65 scanned (0.55% of total), 0 eagerly scanned\ntuples: 0 removed, 0 remain, 0 are dead but not yet removable\nremovable cutoff: 1189704, which was 1 XIDs old when operation ended\nnew relfrozenxid: 1189704, which is 1 XIDs ahead of previous value\nfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen\nvisibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)\nindex scan bypassed: 22 pages from table (0.18% of total) have 491 dead item identifiers\navg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\nbuffer usage: 133 hits, 0 reads, 0 dirtied\nWAL usage: 2 records, 0 full page images, 436 bytes, 0 buffers full\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s",
+          "detail": null
+        },
+        {
+          "message": "vacuuming \"fronta_acceptance_a5188a81.pg_toast.pg_toast_27722\"",
+          "detail": null
+        },
+        {
+          "message": "finished vacuuming \"fronta_acceptance_a5188a81.pg_toast.pg_toast_27722\": index scans: 0\npages: 0 removed, 0 remain, 0 scanned (100.00% of total), 0 eagerly scanned\ntuples: 0 removed, 0 remain, 0 are dead but not yet removable\nremovable cutoff: 1189705, which was 0 XIDs old when operation ended\nnew relfrozenxid: 1189705, which is 1 XIDs ahead of previous value\nfrozen: 0 pages from table (100.00% of total) had 0 tuples frozen\nvisibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)\nindex scan not needed: 0 pages from table (100.00% of total) had 0 dead item identifiers removed\navg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\nbuffer usage: 12 hits, 0 reads, 0 dirtied\nWAL usage: 1 records, 0 full page images, 258 bytes, 0 buffers full\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s",
+          "detail": null
+        },
+        {
+          "message": "analyzing \"fronta.events\"",
+          "detail": null
+        },
+        {
+          "message": "\"events\": scanned 11896 of 11896 pages, containing 0 live rows and 491 dead rows; 0 rows in sample, 0 estimated total rows",
+          "detail": null
+        },
+        {
+          "message": "finished analyzing table \"fronta_acceptance_a5188a81.fronta.events\"\navg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\nbuffer usage: 11910 hits, 0 reads, 0 dirtied\nWAL usage: 0 records, 0 full page images, 0 bytes, 0 buffers full\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s",
+          "detail": null
+        }
+      ],
+      "after": [
+        [
+          3213,
+          "",
+          "active",
+          "1189702",
+          "0:00:01.239543",
+          "autovacuum: VACUUM ANALYZE fronta.tasks"
+        ]
+      ]
+    }
+  ]
+}

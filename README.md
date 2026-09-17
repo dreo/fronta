@@ -122,15 +122,28 @@ subscription; locked deliveries are skipped. Closing the consumer leaves its sub
 backlog intact; `await fronta.unsubscribe(name)` deletes both.
 
 Each pull orders visible, unlocked rows by sequence. Sequence allocation precedes commit, so a
-lower sequence may arrive later; no cursor advances past it. Registration does not backfill old
-transitions or transitions whose statements already read the subscriptions. `get_task()` reads
-the latest row, which may be newer than the event or already purged. Unacknowledged events expire
-`retention_s` after the event, with warnings in worker logs; terminal tasks expire that interval
-after finishing.
+lower sequence may arrive later; no cursor advances past it. By default registration does not
+backfill old transitions or transitions whose statements already read the subscriptions.
+`get_task()` reads the latest row, which may be newer than the event or already purged.
+Unacknowledged events expire `retention_s` after the event, with warnings in worker logs;
+terminal tasks expire that interval after finishing.
 
 Database reactions using `batch.conn` and `ack()` commit atomically. External effects remain at
-least once; use `(subscription, seq)` as their idempotency key. The feed and its limitations are
-specified in [the reference](docs/reference.md#event-feed).
+least once. For live-only subscriptions, use `(subscription, seq)` as their idempotency key.
+The feed and its limitations are specified in [the reference](docs/reference.md#event-feed).
+
+For a newly deployed consumer, use `subscribe(..., backfill=True)` to project every retained
+matching task, or `backfill=timedelta(hours=1)` (also accepts seconds) to limit terminal rows by
+their finish time. Requested queued/running rows are always included. Backfill completes before
+the feed opens, resumes after a crash, and never replays history for an existing completed
+registration. Live transitions during backfill may duplicate snapshots with different `seq`
+values: dedupe by `(id, attempt, state)` during this window or make reactions idempotent per task.
+Register at deploy time and keep the subscription across restarts; do not `unsubscribe` on shutdown.
+Startup waits for older transactions before scanning, without holding up unrelated queue work.
+Finish your own open transactions and feed batches before awaiting a backfilling subscription.
+Run `fronta db init` before using any 0.6.0 client, including ordinary subscriptions and stats.
+Older-schema and mixed-version operation are unsupported; follow the
+[upgrade procedure](docs/reference.md#database-initialization-and-upgrades).
 
 Keep transaction and feed batch blocks short: a long open transaction can delay PostgreSQL
 vacuum cleanup and slow the queue. Retention and this operating constraint are explained in

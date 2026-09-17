@@ -1,0 +1,298 @@
+{
+  "created_at": "2026-09-17T09:56:22.596023+00:00",
+  "phase": "backfill",
+  "source_sha256": "d18caad3c34f1386e67d8ed2175e6e2538f69875c7b758228c177ed11a0396a0",
+  "python": "3.13.13 (main, May 10 2026, 19:26:54) [Clang 22.1.3 ]",
+  "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+  "psycopg": "3.3.4",
+  "postgres": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+  "durability": [
+    {
+      "name": "fsync",
+      "setting": "on"
+    },
+    {
+      "name": "full_page_writes",
+      "setting": "on"
+    },
+    {
+      "name": "max_wal_size",
+      "setting": "4096"
+    },
+    {
+      "name": "shared_buffers",
+      "setting": "262144"
+    },
+    {
+      "name": "synchronous_commit",
+      "setting": "on"
+    }
+  ],
+  "result": {
+    "config": {
+      "name": "feed",
+      "workers": 8,
+      "concurrency": 256,
+      "producers": 4,
+      "clients": 8,
+      "jobs": 180000,
+      "live_enqueue": true,
+      "subscription": true,
+      "rate_s": 750.0,
+      "timeout_s": 600,
+      "identity": true
+    },
+    "retained": 1000000,
+    "live_jobs": 180000,
+    "target_completion_rate_s": 3000,
+    "backfill_seconds": 6.871091090986738,
+    "backfilled_rows": 1033267,
+    "chunks": 209,
+    "backfill_rows_per_s": 150378.88252644538,
+    "drain_seconds": 49.460164285002975,
+    "events": 1200487,
+    "duplicates": 20487,
+    "missing": 0,
+    "unexpected": 0,
+    "claim_10s": {
+      "n": 7426,
+      "mean_ms": 5.144828549157039,
+      "p50_ms": 5.024140002205968,
+      "p95_ms": 7.337218004977331,
+      "p99_ms": 8.561264025047421,
+      "max_ms": 86.18074300466105
+    },
+    "worker_metrics": {
+      "operations": {
+        "claim": {
+          "n": 49536,
+          "mean_ms": 8.98650993685124,
+          "p50_ms": 5.232800001977012,
+          "p95_ms": 22.690840007271618,
+          "p99_ms": 72.58921797620133,
+          "max_ms": 2022.4103669752367
+        },
+        "complete": {
+          "n": 49533,
+          "mean_ms": 7.313066396688871,
+          "p50_ms": 4.788435995578766,
+          "p95_ms": 17.548326984979212,
+          "p99_ms": 47.541876003379,
+          "max_ms": 2019.1295259865
+        }
+      },
+      "empty_claims": 140369,
+      "batch_sizes": {
+        "claim": {
+          "calls": 189953,
+          "items": 285000,
+          "mean": 1.5003711444409933
+        },
+        "complete": {
+          "calls": 49533,
+          "items": 285000,
+          "mean": 5.7537399309551205
+        }
+      },
+      "event_loop_lag": {
+        "n": 15444,
+        "mean_ms": 0.8272210638513462,
+        "p50_ms": 0.5153809790499481,
+        "p95_ms": 1.8131220014765832,
+        "p99_ms": 3.7198630045168075,
+        "max_ms": 123.43413300113752
+      },
+      "worker_cpu_s": 344.03811399999995,
+      "worker_cpu_cores": 3.485937702820514,
+      "worker_peak_rss_sum_bytes": 974880768,
+      "pool_counters": {
+        "requests_num": 239485,
+        "requests_queued": 35,
+        "requests_wait_ms": 141,
+        "usage_ms": 982728
+      },
+      "completion_timeline": [
+        {
+          "from_s": 0,
+          "jobs": 27732,
+          "tasks_per_s": 2773.2
+        },
+        {
+          "from_s": 10,
+          "jobs": 29999,
+          "tasks_per_s": 2999.9
+        },
+        {
+          "from_s": 20,
+          "jobs": 29989,
+          "tasks_per_s": 2998.9
+        },
+        {
+          "from_s": 30,
+          "jobs": 30009,
+          "tasks_per_s": 3000.9
+        },
+        {
+          "from_s": 40,
+          "jobs": 29962,
+          "tasks_per_s": 2996.2
+        },
+        {
+          "from_s": 50,
+          "jobs": 30028,
+          "tasks_per_s": 3002.8
+        },
+        {
+          "from_s": 60,
+          "jobs": 11737,
+          "tasks_per_s": 1173.7
+        },
+        {
+          "from_s": 70,
+          "jobs": 28260,
+          "tasks_per_s": 2826.0
+        },
+        {
+          "from_s": 80,
+          "jobs": 43050,
+          "tasks_per_s": 4305.0
+        },
+        {
+          "from_s": 90,
+          "jobs": 24234,
+          "tasks_per_s": 2787.7175544813167
+        }
+      ]
+    },
+    "worker_exits": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "worker_errors": [],
+    "bad_tasks": 0,
+    "producer_metrics": [
+      {
+        "jobs": 45000,
+        "elapsed_s": 60.01051258400548,
+        "cpu_s": 41.762364999999996,
+        "identity": {
+          "count": 45000,
+          "sum": 49050233567,
+          "xor": 158169925957214014428810056836884310666
+        }
+      },
+      {
+        "jobs": 45000,
+        "elapsed_s": 60.008260278002126,
+        "cpu_s": 41.963928,
+        "identity": {
+          "count": 45000,
+          "sum": 49049948879,
+          "xor": 241052750170684495427809521433452609034
+        }
+      },
+      {
+        "jobs": 45000,
+        "elapsed_s": 60.005463534005685,
+        "cpu_s": 41.663579999999996,
+        "identity": {
+          "count": 45000,
+          "sum": 49049850596,
+          "xor": 224946802510423326765071336498517618862
+        }
+      },
+      {
+        "jobs": 45000,
+        "elapsed_s": 60.00745571099105,
+        "cpu_s": 41.930620000000005,
+        "identity": {
+          "count": 45000,
+          "sum": 49050056958,
+          "xor": 250348898381990642435659434515087786524
+        }
+      }
+    ],
+    "storage": {
+      "before": {
+        "heap_bytes": 0,
+        "index_bytes": 16384,
+        "index_main_bytes": 16384,
+        "n_live_tup": 0,
+        "n_dead_tup": 0,
+        "vacuum_count": 0,
+        "autovacuum_count": 0
+      },
+      "after_backfill": {
+        "heap_bytes": 89251840,
+        "index_bytes": 41811968,
+        "index_main_bytes": 41811968,
+        "n_live_tup": 1025342,
+        "n_dead_tup": 0,
+        "vacuum_count": 0,
+        "autovacuum_count": 1
+      },
+      "after_vacuum": [
+        {
+          "heap_bytes": 0,
+          "index_bytes": 45858816,
+          "index_main_bytes": 45858816,
+          "n_live_tup": 0,
+          "n_dead_tup": 0,
+          "vacuum_count": 1,
+          "autovacuum_count": 1
+        },
+        {
+          "heap_bytes": 0,
+          "index_bytes": 45916160,
+          "index_main_bytes": 45858816,
+          "n_live_tup": 0,
+          "n_dead_tup": 0,
+          "vacuum_count": 2,
+          "autovacuum_count": 1
+        }
+      ],
+      "stable_after_two_vacuums": true,
+      "returned_to_initial_bytes": false
+    },
+    "contention": {
+      "seconds": 11.922098554001423,
+      "attempts": [
+        {
+          "start": 137133.43846297,
+          "seconds": 2.002733288012678
+        },
+        {
+          "start": 137136.023285091,
+          "seconds": 2.003796203993261
+        },
+        {
+          "start": 137138.610177452,
+          "seconds": 2.001734238991048
+        },
+        {
+          "start": 137140.93780411,
+          "seconds": 2.0022437169973273
+        },
+        {
+          "start": 137143.341458183,
+          "seconds": 2.002212778024841
+        }
+      ],
+      "passed": true,
+      "completions_between_attempts": [
+        2598,
+        2952,
+        1688,
+        2335
+      ]
+    },
+    "passed": true
+  },
+  "passed": true
+}

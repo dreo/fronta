@@ -113,7 +113,8 @@ lock can serialize these transactions; batch several enqueues per transaction to
 ## Event feed
 
 `subscribe(name, *, states=("succeeded", "failed", "cancelled"), types=None, settings=None,
-batch_size=256)` registers or updates a named subscription and opens one dedicated connection.
+batch_size=256, backfill=None)` registers or updates a named subscription and opens one dedicated
+connection.
 `types=None` matches every type; an empty filter matches none. Batch size is 1–1,000 and is a
 consumer call argument, not a worker setting. Filters apply to subsequent transition statements;
 existing backlog keeps its original filters. Reusing a name updates filters, so competing consumers
@@ -134,9 +135,10 @@ With no subscriptions there are no event inserts.
 
 Pulls use `ORDER BY seq FOR UPDATE SKIP LOCKED`. Sequence numbers precede commit; ordering is
 only among currently visible and unlocked rows, even with one consumer. No cursor skips a late
-commit. There is no backfill for statements that read subscriptions before registration. Delivery
-is at least once until acknowledgement or retention expiry. Use `(subscription, seq)` to dedupe
-external reactions: manual requeue means `(id, attempt, state)` is not always unique.
+commit. With backfill disabled, statements that read subscriptions before registration are not
+replayed. Delivery is at least once until acknowledgement or retention expiry. For live-only
+subscriptions, use `(subscription, seq)` to dedupe external reactions: manual requeue means
+`(id, attempt, state)` is not always unique. Backfill duplicates need the handling below.
 `get_task(id, conn=None)` returns the latest row, not an event snapshot, and raises `TaskNotFound`
 after purge.
 
@@ -146,7 +148,96 @@ removal waits for those transactions without locking unrelated subscriptions. A 
 or large backlog may exceed `statement_timeout_s`; retry after its consumers finish their batches.
 An iterator ends if a pull observes that its registration was removed. Workers purge expired
 unacknowledged events in bounded batches and log counts per subscription. Monitor backlog and
-oldest age through `stats()` to stay inside `retention_s`.
+oldest age and `backfill_pending` through `stats()` to stay inside `retention_s`.
+Use read committed isolation for caller-owned enqueue connections when subsequent statements
+must observe filter updates or unsubscribe; repeatable-read snapshots can retain the old filters.
+
+### Backfill at registration
+
+`backfill` is opt-in and accepts these values:
+
+| Value | Matching rows projected into the new subscription |
+|---|---|
+| `None` or `False` (default) | None; ordinary registration does not wait for earlier transactions |
+| `True` | Every retained matching task |
+| Nonnegative finite seconds or `timedelta` | Terminal rows with `finished_at >= database time - window`, plus every requested queued/running row |
+
+Zero seconds enables a zero-length window; it does not disable backfill. Negative durations,
+NaN, infinity and unsupported argument types raise `ValueError` before connecting. `states`
+and `types` apply as usual, including empty filters matching nothing.
+
+Only a creating call starts a backfill. Reusing a name preserves its backlog and updates its
+filters without replaying history, even with `backfill=True`. To deliberately backfill a different
+filter, unsubscribe and create again. A persisted pending backfill is always resumed, including
+by calls that omit `backfill`; its original absolute time boundary and remaining states are
+preserved. Type-filter updates apply to the remaining chunks. Register consumers at deploy time
+and never unsubscribe as part of a restart.
+
+Registration upserts the filters and installs a marker only for a new backfilling name. After
+that statement commits, the consumer captures the virtual transaction IDs currently owned by
+other connections to this database. It polls that fixed set in `pg_locks` every 250 ms and starts
+chunks only after all those transactions end. A transition that read the old subscription list
+must finish before the scan; later transactions see the new registration. This also covers
+ordinary repeatable-read caller transactions. The barrier holds no registration locks between
+polls, so unrelated transitions, reactions and feed pulls continue throughout the wait.
+
+Virtual transaction locks are the synchronization primitive, including for read-only and idle
+transactions. `pg_stat_activity` supplies only public PID/database metadata for database scoping
+and optional diagnostic details; correctness does not depend on activity tracking, timestamps,
+or monitoring grants. The previous exclusive-table-lock design was rejected because an open
+reaction batch could make its lock request stall the entire queue. Prepared transactions
+(two-phase commit) and imported snapshots are outside the backfill guarantee: PREPARE releases
+the virtual lock, and a later transaction can deliberately import an older snapshot.
+
+The wait has no overall timeout: any older transaction in this database can delay consumer
+startup, including this process's own transactions and open batches. Finish them before
+awaiting a backfilling subscription, or the caller can wait on itself. Every five seconds,
+warnings identify remaining virtual IDs, PIDs, users, application names and transaction ages;
+hidden or disabled activity details are reported as unavailable. Cancellation or connection
+loss leaves the marker for a later consumer, which captures a fresh set before resuming.
+
+Backfill runs in transactions of at most 5,000 rows, one state at a time in alphabetical order
+and ascending task-id order. Its registration row lock allows publishers and feed pulls to
+continue. Each chunk checks the marker's generation under that lock; an old consumer cannot
+use its completed wait for a deleted and recreated name. The captured transaction set is not
+persisted. The feed is yielded only after the pending work finishes or its registration is removed.
+INFO logs report start/resume, states, time boundary, inserted rows, chunks and elapsed time;
+removal/replacement is logged as stopped, and DEBUG logs report each chunk. `stats()` reports
+`backfill_pending` while the marker exists, including during the initial wait.
+
+For stable filters, matching task states present after the registration commit are covered by
+backfill or live events, except rows purged before backfill reaches them. This projects the
+retained task's current state, not its full transition history. Use a window comfortably shorter
+than `retention_s` minus consumer lag. Terminal snapshots have the transition's state and attempt;
+queued/running snapshots describe the row when scanned. `get_task()` still returns the latest
+row. Backfilled events have a fresh `created_at`, so their retention starts at backfill time.
+There is no ordering guarantee between live and backfilled events.
+
+A transition during registration or backfill may produce both a live event and a snapshot,
+with identical `(id, attempt, state)` and distinct sequence numbers. During this window dedupe
+by that tuple or make reactions idempotent per task: `(subscription, seq)` alone does not collapse
+these duplicates. Manual requeue can reuse a state/attempt tuple, so a permanent tuple dedupe
+is not suitable when every such transition needs a distinct external reaction.
+
+| Failure | Result |
+|---|---|
+| Any subscription on a schema missing `subscriptions.backfill` | `ConfigurationError` naming `fronta db init`; nothing registered |
+| Older transaction stays open | Registration remains pending; only the starting consumer waits, with periodic blocker warnings |
+| Connection lost or consumer cancelled | Committed chunks and progress remain; subscribe with the same name to resume |
+| Chunk exceeds `statement_timeout_s` | The entire chunk, including its marker update, rolls back; error surfaces; a later call resumes |
+| Concurrent creators or resumers | One marker; chunks serialize and re-read progress, without duplicate backfill inserts |
+| Unsubscribe during backfill | Waits for the current chunk, deletes registration and events; the loop stops at its next chunk and the first pull ends. An initial transaction barrier already in progress finishes its wait first |
+| Name deleted and recreated while an old consumer is paused | Its next chunk stops without touching the replacement marker; the new consumer waits independently |
+| Source task purged between chunks | Its snapshot is no longer available |
+
+Backfill adds one event insert per retained match, once per registration. Estimate that cost as
+completion rate × retention for `True`, or completion rate × window for a duration, plus any
+matching active tasks. A consumer's startup waits for older transactions and then these chunks.
+Each barrier poll scans PostgreSQL's lock table; cost depends on the cluster's lock count and
+the number of starting consumers. The stress report records poll duration and worker progress.
+Backfill does not replace application reconciliation for retention expiry, poison batches or bugs.
+
+### Retention and transaction hygiene
 
 Fronta uses ordinary task and event tables, without partitioning. Workers delete finished tasks
 older than `retention_s` in bounded batches; queued and running tasks remain. This bounds retained
@@ -174,7 +265,8 @@ Fronta does not terminate caller-owned transactions.
   attempt. Missing rows raise `TaskNotFound`; other states or an active dedupe-key conflict raise
   `NotRequeueable` (HTTP 409).
 - `await fronta.stats()` returns `types` with `type`, `queued_due`, `queued_scheduled`, `running`,
-  `oldest_due_age_s`, and `subscriptions` with `name`, `backlog`, `oldest_event_age_s`. Empty ages
+  `oldest_due_age_s`, and `subscriptions` with `name`, `backlog`, `oldest_event_age_s`,
+  `backfill_pending` (boolean, true while a backfill is pending). Empty ages
   are null. Counts scan active tasks and unacknowledged events; cost grows with both backlogs.
 - `metadata=` accepts any JSON value at enqueue and shares `progress_cap` (64 KiB by default).
   It appears on `TaskRow` and `ctx.metadata`, with no automatic inheritance by child tasks. Over-cap metadata raises `PayloadTooLarge`.
@@ -186,18 +278,25 @@ It defaults to a five-minute statement deadline, including lock waits; `--timeou
 `FRONTA_STATEMENT_TIMEOUT_S` overrides it. `fronta db sql` prints the same transactional DDL for
 administrator review. Workers and servers report an actionable error if initialization is needed.
 
+### Upgrade to 0.6.0 from 0.5.x
+
+Backward compatibility with older Fronta releases or schemas is not supported. Stop old clients,
+run `fronta db init`, then start the new release. Initialization is required before using any
+0.6.0 client, including ordinary subscriptions and statistics; mixed-version operation is
+unsupported. The initializer adds the nullable `subscriptions.backfill` JSONB column idempotently
+without changing the schema version or claim functions. Every subscription reports the upgrade
+command if the column is missing; statistics reads the column directly.
+
 ### Upgrade from 0.4.x
 
 1. Pause producers and gracefully stop old workers, letting running attempts settle.
-2. Install 0.5.x and run `fronta db init`. Restart database connections after the column changes.
+2. Install the current release and run `fronta db init`. Restart database connections after the column changes.
 3. Start the new workers and consumers, then resume producers.
 4. Once old workers are gone, `fronta db init --prune` removes obsolete claim functions.
 
-The initial column change uses this pause. The mixed-fleet rehearsal covers reconnected legacy
-workers on unlimited types; use the full-stop procedure above for limited types. Legacy workers
-do not emit durable feed events or honor pause state. Complete the fleet upgrade before relying
-on those features. Future compatible versioned claim functions can coexist until pruning; init
-never lowers a newer schema version.
+Use this stop/init/restart procedure for the whole fleet. Retained obsolete claim functions are
+not a compatibility guarantee; mixed-version operation is unsupported. Init never lowers a newer
+schema version.
 
 Replace `subscribe_events()` with `subscribe(name)` and acknowledge each batch. The new feed is
 durable and supports competing consumers; use `(subscription, seq)` for external idempotency.

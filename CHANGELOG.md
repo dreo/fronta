@@ -3,7 +3,33 @@
 All notable changes to Fronta are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/). Pre-1.0, minor versions may change the schema and the
-contracts; follow each release's database initialization instructions.
+contracts. Backward compatibility with older Fronta releases or schemas is not supported;
+follow each release's database initialization instructions.
+
+## [0.6.0] - Unreleased
+
+### Added
+
+- Opt-in `subscribe(..., backfill=True)` to project retained matching task rows, or a seconds /
+  `timedelta` window for terminal rows. Backfill uses short resumable chunks, coordinates concurrent
+  creators and consumers, and finishes before the feed opens. Live/backfill duplicates require
+  `(id, attempt, state)` dedupe during backfill or idempotent reactions.
+- Registration waits on a captured set of virtual transaction locks without stalling unrelated
+  queue work. Resuming consumers capture afresh; generation checks prevent an old consumer from
+  modifying a replacement registration. Long waits report blocking sessions. Prepared
+  transactions and imported snapshots are outside the backfill guarantee.
+- Per-subscription `backfill_pending` in `stats()`, and backfill progress logging.
+
+### Changed
+
+- `fronta db init` adds nullable `subscriptions.backfill` JSONB without changing the schema
+  version or transition statements. Run it before using any 0.6.0 client. Subscriptions and
+  statistics require the column; there are no fallbacks for the 0.5.0 schema. Stop old clients,
+  initialize the database, then start the new release; mixed-version operation is unsupported.
+
+### Removed
+
+- Legacy claim-function refresh logic and mixed-version stress rehearsals.
 
 ## [0.5.0] - 2026-09-16
 

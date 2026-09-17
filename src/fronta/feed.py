@@ -2,18 +2,112 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
+import sys
+import time
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import psycopg
 
 from fronta import runtime, store
+from fronta.errors import ConfigurationError
 from fronta.model import State, TaskEvent
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
     from fronta.config import Settings
+
+
+log = logging.getLogger(__name__)
+
+_BACKFILL_CHUNK = 5_000
+_BACKFILL_POLL_S = 0.25
+_BACKFILL_WARN_S = 5.0
+
+
+def _normalize_backfill(backfill: bool | float | timedelta | None) -> bool | float:
+    if backfill is None or isinstance(backfill, bool):
+        return bool(backfill)
+    window = backfill.total_seconds() if isinstance(backfill, timedelta) else backfill
+    if not isinstance(window, (int, float)) or not 0 <= window <= sys.float_info.max:
+        msg = "backfill must be a boolean or a finite, nonnegative duration in seconds"
+        raise ValueError(msg)
+    return float(window)
+
+
+async def _register(
+    conn: store.Conn,
+    name: str,
+    states: list[str],
+    types: list[str] | None,
+    *,
+    backfill: bool | float,
+) -> store.Backfill | None:
+    try:
+        return await store.register_subscription(conn, name, states, types, backfill)
+    except psycopg.errors.UndefinedColumn as exc:
+        msg = "Feed subscriptions require a schema upgrade; run `fronta db init`"
+        raise ConfigurationError(msg) from exc
+
+
+async def _wait_for_transactions(conn: store.Conn, name: str) -> None:
+    # Registration has committed. Every transaction that could have read the old subscription
+    # set is either finished or owns one of these locks. Capture once: later transactions see
+    # the registration and must not extend this wait. Autocommit releases our own transaction
+    # between polls. A resumer captures afresh; no persisted transaction IDs are needed.
+    blockers = await store.backfill_blockers(conn)
+    transactions = [row[0] for row in blockers]
+    warn_at = time.monotonic() + _BACKFILL_WARN_S
+    while blockers:
+        if time.monotonic() >= warn_at:
+            for vxid, pid, user, application, age in blockers:
+                log.warning(
+                    "feed backfill waiting name=%s virtualxid=%s pid=%s user=%s "
+                    "application=%s transaction_age=%s; finish this transaction before "
+                    "awaiting the subscription (including this process's own batches)",
+                    name,
+                    vxid,
+                    pid,
+                    user,
+                    application,
+                    age,
+                )
+            warn_at = time.monotonic() + _BACKFILL_WARN_S
+        await asyncio.sleep(_BACKFILL_POLL_S)
+        blockers = await store.backfill_blockers(conn, transactions)
+
+
+async def _backfill(conn: store.Conn, name: str, marker: store.Backfill) -> None:
+    started = time.monotonic()
+    log.info(
+        "feed backfill start/resume name=%s states=%s since=%s",
+        name,
+        sorted(marker["pending"]),
+        marker["since"],
+    )
+    await _wait_for_transactions(conn, name)
+    rows = chunks = 0
+    pending = True
+    while pending:
+        result = await store.backfill_chunk(conn, name, marker["generation"], _BACKFILL_CHUNK)
+        if result is None:
+            log.info("feed backfill stopped name=%s: registration removed or replaced", name)
+            return
+        count, pending = result
+        rows += count
+        chunks += 1
+        log.debug("feed backfill chunk name=%s rows=%s pending=%s", name, count, pending)
+    log.info(
+        "feed backfill finished name=%s rows=%s chunks=%s seconds=%.3f",
+        name,
+        rows,
+        chunks,
+        time.monotonic() - started,
+    )
 
 
 class Batch:
@@ -96,15 +190,22 @@ class Feed:
 
 
 @contextlib.asynccontextmanager
-async def subscribe(
+async def subscribe(  # noqa: PLR0913  # additive public call arguments
     name: str,
     *,
     states: Sequence[State | str] = (State.SUCCEEDED, State.FAILED, State.CANCELLED),
     types: Sequence[str] | None = None,
     settings: Settings | None = None,
     batch_size: int = 256,
+    backfill: bool | float | timedelta | None = None,
 ) -> AsyncIterator[Feed]:
-    """Register filters and consume available rows in sequence order, without a cursor."""
+    """Consume durable events, optionally projecting retained tasks on first registration.
+
+    Backfill accepts True (all retained matches), seconds, or a timedelta. A duration limits
+    terminal rows by finished_at; queued/running rows always describe current state. Pending
+    backfills resume even when this call omits the argument. Concurrent live events may
+    duplicate backfilled (id, attempt, state) snapshots.
+    """
     store.check_name(name)
     selected = [State(s).value for s in states]
     for typ in types or ():
@@ -112,17 +213,22 @@ async def subscribe(
     if not 1 <= batch_size <= 1000:  # noqa: PLR2004  # bounded delivery
         msg = "feed batch_size must be between 1 and 1000"
         raise ValueError(msg)
+    backfill = _normalize_backfill(backfill)
     current = settings or runtime.get_settings()
     async with await psycopg.AsyncConnection.connect(
         runtime.dsn_of(current),
         **runtime.connection_kwargs(current, "fronta-feed"),
     ) as conn:
         await conn.execute("LISTEN fronta_feed")
-        await conn.execute(
-            "INSERT INTO fronta.subscriptions (name, states, types) VALUES (%s, %s, %s) "
-            "ON CONFLICT (name) DO UPDATE SET states = EXCLUDED.states, types = EXCLUDED.types",
-            (name, selected, None if types is None else list(types)),
+        marker = await _register(
+            conn,
+            name,
+            selected,
+            None if types is None else list(types),
+            backfill=backfill,
         )
+        if marker is not None:
+            await _backfill(conn, name, marker)
         await conn.set_autocommit(False)
         feed = Feed(conn, name, current, batch_size)
         try:
