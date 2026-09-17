@@ -11,83 +11,79 @@
 888        888   T88b  "Y88888P"  888    Y888     888  d88P     888
 ```
 
-**A task queue for Python that lives in your PostgreSQL database, with optional sandboxed
-execution of untrusted-input tools.**
+Fronta is an **asyncio task queue for Python backed by PostgreSQL**: use it for background jobs
+and sandboxed tools alongside a Postgres application; choose a more mature queue or workflow
+platform when you need API stability or built-in orchestration.
 
-Fronta is for applications that already run on PostgreSQL and asyncio and want background work
-without adding a message broker. Your code enqueues a task in the same transaction as the
-business change that needs it; workers claim tasks with `FOR UPDATE SKIP LOCKED`, run either an
-`async def` handler or an executable in a Linux sandbox, and write the outcome back to the same
-database. Every task is a row: its state, input, result, error and progress can be read with
-SQL or through the Python API.
+**Alpha.** APIs and database schemas can change before 1.0; upgrades require stopping old
+workers and clients. The alternatives below have longer production histories.
 
-**Use it if you:**
+[Quick start](#quick-start) · [Comparison](#compare-the-options) · [Performance](#performance) ·
+[Reference](REFERENCE.md)
 
-- run PostgreSQL 16+ (18 recommended) and Python 3.12+ asyncio code on Linux or macOS;
-- want transactional enqueue, retries with jittered backoff, scheduled runs, priorities, dedupe
-  keys and exact per-type and per-key concurrency limits, all enforced in the database;
-- need to run tools that consume hostile input (parsers, converters, CPU-heavy commands, in any
-  language) in a separate process with a private filesystem, no network and resource limits;
-- want a durable, acknowledged event feed so your own code can react to task outcomes and build
-  workflows on top.
+## What it does
 
-**Look elsewhere if you need:** a broker-based queue (RabbitMQ, Redis), a durable workflow
-engine that replays code after failures, cron or periodic scheduling, rate limiting,
-exactly-once side effects, Windows, or a stable API. Fronta is **alpha**: the API and the
-schema can change between minor versions before 1.0, and upgrades require stopping old clients.
+- **PostgreSQL only.** The SDK and workers connect directly to PostgreSQL. No broker required.
+- **Asyncio tasks or processes.** Run Python libraries in `async def` tasks, or arbitrary
+  executables wrapped with `bubblewrap` on Linux.
+- **Transactional enqueue.** Commit tasks and application writes in the same transaction.
+- **Task controls.** Retries with backoff, timeouts, delayed runs, priorities, active-task
+  deduplication and per-type/per-key concurrency limits.
+- **Event feed.** Live task-state events with durable subscriptions and backfill. Acknowledge
+  events and enqueue follow-up tasks in one transaction. Workflow logic is your code.
+- **SQL and APIs.** Query state, progress, results and errors with SQL. Optional REST/MCP server
+  and dashboard.
 
-## How it works
+**Limits:** tasks can run more than once; external effects must tolerate retries. No built-in
+cron, rate limiting, workflow replay or task-output streaming. Queue traffic uses your database's
+capacity. [Details](REFERENCE.md).
 
-```text
- Python SDK --------+
- REST / MCP server -+---> PostgreSQL <----> workers
-                         tasks + events     |-- async Python handlers
-                               |            `-- Linux process sandboxes
-                               v
-                    your event consumers (optional)
-```
+## Compare the options
 
-- **Enqueue** inserts a row, optionally inside your own transaction. A `key` deduplicates
-  against queued and running tasks; `run_at` schedules; `priority` orders.
-- **Workers** claim batches in priority order, hold leases renewed by heartbeats, and record
-  every outcome in one fenced statement: a worker that lost its lease cannot overwrite a newer
-  attempt's result. Crashed workers' tasks are reaped and retried while attempts remain.
-- **Handlers** are `async def` functions in the worker process. **Process tasks** are
-  executables run by bubblewrap with a private `/work`, allowlisted read-only host paths, no
-  network, a cleared environment and CPU, memory and PID limits.
-- **Event feed:** named subscriptions receive one durable row per state transition and
-  acknowledge batches; a consumer can enqueue the next task and acknowledge in the same
-  transaction. New subscriptions can backfill retained history.
-- **Server** (optional): REST, an MCP endpoint and a small dashboard for enqueueing, inspection,
-  cancellation, pause/resume and requeue. Workers and the SDK talk to PostgreSQL directly.
+Self-hosted setups, checked September 2026. Every option also needs workers; the service column
+lists the infrastructure around them. PostgreSQL-only storage is not unique to Fronta.
 
-Measured with durable commits: a physical Linux host (i5-13500T, NVMe) sustained 3,000 tasks/s
-for ten minutes, 1.8 million tasks, through a held-open transaction; a laptop against Docker
-PostgreSQL drained a preloaded backlog of no-op tasks at 32,887 tasks/s. Details, hardware
-and limitations are in the [benchmark results](benchmarks/RESULTS.md).
+| Option | Services | Python and tools | Workflows and live data | Maturity / best fit |
+|---|---|---|---|---|
+| **Fronta** | PostgreSQL; optional API server | Native asyncio handlers; Linux sandboxed executables | Transactional task-state feed and backfill; application owns orchestration | **Alpha**; Python/Postgres apps that want a queue and own their workflow logic |
+| [Celery][celery] | Broker, commonly RabbitMQ or Redis; optional result backend | Python [process, thread or greenlet pools][celery-pools]; no standard asyncio pool | [Chains, groups and chords][celery-canvas]; periodic jobs and monitoring events | **Mature**; broad Python ecosystem, routing and worker-pool choices |
+| [Hatchet][hatchet] | PostgreSQL + engine/API; [RabbitMQ optional, embedded mode available][hatchet-embedded] | Async/sync Python and other language SDKs | Durable workflows, DAGs, cron and [output streams][hatchet-streams] | **Established workflow platform**; orchestration supplied by the engine |
+| [Windmill][windmill] | [PostgreSQL + server][windmill-hosting] | Multi-language scripts, including Python; configurable [nsjail sandbox][windmill-sandbox] | Flows, schedules, approvals and internal apps | **Established automation platform**; scripts, workflows and operator UIs together |
+| [Procrastinate][procrastinate] | PostgreSQL | Sync and native async Python tasks | [Periodic jobs, locks and Django integration][procrastinate-features] | **Established queue**; a close alternative for Python/Postgres jobs |
 
-## Compared with
+For long-lived workflows with replay and signals, also consider [Temporal][temporal].
 
-| Project | Required service | Where it differs from Fronta |
-|---|---|---|
-| [Procrastinate](https://procrastinate.readthedocs.io/en/stable/) | PostgreSQL | Sync and async tasks, Django integration, periodic jobs; no sandboxing or event feed. |
-| [PGQueuer](https://github.com/janbjorge/pgqueuer) | PostgreSQL | asyncpg-based job queue with cron-style scheduling; no sandboxing or transactional event feed. |
-| [Celery](https://docs.celeryq.dev/en/stable/getting-started/introduction.html) | RabbitMQ or Redis | Workflow composition, routing and periodic scheduling; broker-based delivery. |
-| [Dramatiq](https://dramatiq.io/) | RabbitMQ or Redis | Actor-style tasks, retries and middleware; broker-based. |
-| [arq](https://arq-docs.helpmanual.io/) / [RQ](https://python-rq.org/) | Redis | Small Redis job queues (asyncio and sync respectively). |
-| [Temporal](https://docs.temporal.io/) | Temporal service | Durable workflows that resume after failures; much larger operational footprint. |
+## Performance
 
-Fronta's distinguishing pieces are fenced execution tokens and exact concurrency limits inside
-the claim transaction, sandboxed executables as first-class tasks, and a transactional event
-feed with backfill, all with PostgreSQL as the only dependency.
+Fronta batches database operations and runs async handlers concurrently. The checked-in
+**0.5.0 benchmarks** report these three-run medians with durable commits, macOS clients and
+PostgreSQL 18 in Docker, using eight workers unless noted:
+
+| Workload | Tasks/s | What is timed |
+|---|---:|---|
+| No-op tasks, default settings | 7,244 | Drain a preloaded backlog |
+| No-op tasks, concurrency 256 per worker | 32,887 | Drain a preloaded backlog |
+| Live producers + acknowledged completion feed | 3,063 | Enqueue, execute and consume completions |
+| 512 KiB inputs, four workers | 242 | Drain a preloaded backlog |
+
+These measure queue overhead, not real application or sandbox throughput. A separate ten-minute
+Linux run (i5-13500T, NVMe) completed 1.8 million tasks at **2,994.5/s including final drain**. The
+[reports](benchmarks/RESULTS.md) include hardware, settings, missed throughput targets and
+slowdowns under long transactions; [reproduce the workloads](benchmarks/README.md).
+
+**We have not benchmarked Fronta against these alternatives under the same conditions.**
+[Windmill's cross-engine benchmarks][workflow-benchmarks] use other workloads and omit Fronta.
+Compare the same handler, durability, concurrency and hardware before choosing on speed.
 
 ## Quick start
 
-Install the published package with `uv add fronta` (or `pip install fronta`). This README
-describes the main branch (0.6.0, unreleased); to try it, install from source:
+Requires **Python 3.12+** and **PostgreSQL 16+** (18 recommended). Python workers run on Linux
+and macOS; sandboxed process tasks require Linux. Windows is not supported.
+
+Install the package (`pip install fronta` also works), then initialize the database schema:
 
 ```bash
-uv add git+https://github.com/dreo/fronta.git
+uv add fronta
 export FRONTA_DSN=postgresql://user:pass@localhost/app
 uv run fronta db init   # creates the fronta schema; safe to repeat
 ```
@@ -250,3 +246,17 @@ make checkall    # also tests and the dependency audit
 [Public API](src/fronta/__init__.py). MIT licensed; the dashboard bundles Alpine.js
 ([notice](THIRD_PARTY_NOTICES.md)). Report vulnerabilities privately to the maintainer listed in
 `pyproject.toml`.
+
+[celery]: https://docs.celeryq.dev/en/stable/getting-started/introduction.html
+[celery-pools]: https://docs.celeryq.dev/en/stable/userguide/concurrency/index.html
+[celery-canvas]: https://docs.celeryq.dev/en/stable/userguide/canvas.html
+[hatchet]: https://docs.hatchet.run/v1
+[hatchet-embedded]: https://docs.hatchet.run/v1/embedded
+[hatchet-streams]: https://docs.hatchet.run/v1/advanced-tasks/streaming
+[windmill]: https://www.windmill.dev/docs/intro
+[windmill-hosting]: https://www.windmill.dev/docs/advanced/self_host
+[windmill-sandbox]: https://www.windmill.dev/docs/advanced/security_isolation
+[procrastinate]: https://procrastinate.readthedocs.io/en/stable/howto/basics/tasks.html
+[procrastinate-features]: https://procrastinate.readthedocs.io/en/stable/howto/advanced.html
+[temporal]: https://docs.temporal.io/develop/python
+[workflow-benchmarks]: https://www.windmill.dev/docs/misc/benchmarks/competitors

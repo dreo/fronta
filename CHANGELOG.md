@@ -6,7 +6,7 @@ All notable changes to Fronta are documented here. The format follows
 contracts. Backward compatibility with older Fronta releases or schemas is not supported;
 follow each release's database initialization instructions.
 
-## [0.6.0] - Unreleased
+## [0.6.0] - 2026-09-17
 
 ### Added
 
@@ -22,6 +22,7 @@ follow each release's database initialization instructions.
 
 ### Changed
 
+- README now covers use cases, alternatives, measured performance and setup.
 - `fronta db init` adds nullable `subscriptions.backfill` JSONB and a permanent `generation` UUID
   without changing the schema version or transition statements. Run it before using any 0.6.0
   client. Subscriptions require both columns, and statistics require `backfill`; there are no
