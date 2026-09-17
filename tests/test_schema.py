@@ -3,6 +3,7 @@
 import asyncio
 import re
 from importlib import resources
+from uuid import UUID
 
 import psycopg
 import pytest
@@ -36,26 +37,44 @@ async def test_init_is_idempotent(conn):
             "WHERE table_schema='fronta' AND table_name='subscriptions' AND column_name='backfill'"
         )
     ).fetchall() == [("jsonb", "YES")]
+    assert await (
+        await conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema='fronta' AND table_name='subscriptions' "
+            "AND column_name='generation'"
+        )
+    ).fetchall() == [("uuid", "NO")]
 
 
-async def test_db_init_adds_backfill_without_a_schema_version_change(conn, dsn):
-    await conn.execute("ALTER TABLE fronta.subscriptions DROP COLUMN backfill")
+async def test_db_init_adds_feed_columns_without_a_schema_version_change(conn, dsn):
+    await conn.execute(
+        "ALTER TABLE fronta.subscriptions DROP COLUMN backfill, DROP COLUMN generation"
+    )
+    await conn.execute("INSERT INTO fronta.subscriptions (name) VALUES ('existing'), ('other')")
     version = await (
         await conn.execute("SELECT value FROM fronta.meta WHERE key='schema_version'")
     ).fetchone()
     try:
+        generations = None
         for _ in range(2):
             result = await asyncio.to_thread(CliRunner().invoke, main, ["db", "init", "--dsn", dsn])
             assert result.exit_code == 0, result.output
             assert "ready" in result.output
+            rows = await (
+                await conn.execute(
+                    "SELECT name, generation, backfill FROM fronta.subscriptions ORDER BY name"
+                )
+            ).fetchall()
+            assert all(isinstance(row[1], UUID) and row[2] is None for row in rows)
+            assert len({row[1] for row in rows}) == 2
+            if generations is not None:
+                assert rows == generations
+            generations = rows
         assert (
             await (
                 await conn.execute("SELECT value FROM fronta.meta WHERE key='schema_version'")
             ).fetchone()
             == version
-        )
-        assert (
-            await (await conn.execute("SELECT backfill FROM fronta.subscriptions")).fetchall() == []
         )
     finally:
         await store.init_schema(conn)

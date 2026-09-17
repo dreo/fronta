@@ -7,6 +7,7 @@ from datetime import timedelta
 
 import psycopg
 import pytest
+from psycopg import sql
 
 from fronta import (
     ConfigurationError,
@@ -393,6 +394,14 @@ async def pending_marker(conn, name="workflow"):
     return row[0]
 
 
+async def subscription_generation(conn, name="workflow"):
+    row = await (
+        await conn.execute("SELECT generation FROM fronta.subscriptions WHERE name=%s", (name,))
+    ).fetchone()
+    assert row is not None
+    return row[0]
+
+
 @pytest.mark.parametrize("backfill", [None, False])
 async def test_backfill_off_matches_release_semantics(conn, dsn, settings, monkeypatch, backfill):
     await retained(conn, 1)
@@ -477,7 +486,7 @@ async def test_backfill_chunks_and_marker_lifecycle(conn, settings, monkeypatch)
         await asyncio.wait_for(entered.wait(), 3)
         assert not creating.done()
         marker = await pending_marker(conn)
-        assert marker["generation"]
+        generation = await subscription_generation(conn)
         assert marker["since"] is None
         assert marker["pending"] == {"succeeded": 7}
         assert (await store.stats(conn))["subscriptions"][0]["backfill_pending"] is True
@@ -488,6 +497,7 @@ async def test_backfill_chunks_and_marker_lifecycle(conn, settings, monkeypatch)
     assert len(await backlog(conn)) == len(rows)
     assert await pending_marker(conn) is None
     assert (await store.stats(conn))["subscriptions"][0]["backfill_pending"] is False
+    assert await subscription_generation(conn) == generation
 
 
 @pytest.mark.parametrize("resume", [None, False, True, 0])
@@ -627,8 +637,11 @@ async def test_backfilled_events_get_fresh_retention(conn, settings):
 
 
 @pytest.mark.parametrize("backfill", [None, False, True, 0])
-async def test_missing_column_is_actionable(conn, settings, backfill):
-    await conn.execute("ALTER TABLE fronta.subscriptions DROP COLUMN backfill")
+@pytest.mark.parametrize("column", ["backfill", "generation"])
+async def test_missing_column_is_actionable(conn, settings, backfill, column):
+    await conn.execute(
+        sql.SQL("ALTER TABLE fronta.subscriptions DROP COLUMN {}").format(sql.Identifier(column))
+    )
     try:
         with pytest.raises(ConfigurationError, match="fronta db init"):
             await register(settings, backfill=backfill)
@@ -765,7 +778,7 @@ async def test_chunk_lock_allows_publishers_and_pullers(conn, settings, monkeypa
         # Simulate a previously interrupted consumer while another feed is already open.
         await conn.execute(
             "UPDATE fronta.subscriptions SET backfill="
-            '\'{"generation":"resumed","since":null,"pending":{"succeeded":0}}\'::jsonb'
+            '\'{"since":null,"pending":{"succeeded":0}}\'::jsonb'
         )
         monkeypatch.setattr(psycopg.AsyncConnection, "execute", paused)
         async with asyncio.TaskGroup() as tg:

@@ -288,9 +288,11 @@ Closing a consumer preserves its registration and backlog. `unsubscribe(name)` d
 transactionally after waiting for matching publishers, deliveries and backfill chunks (they
 share-lock the registration row); unrelated subscriptions are not blocked. A busy subscription
 or large backlog may exceed `statement_timeout_s`; retry after its consumers finish their
-batches. An iterator ends when a pull observes that its registration was removed. Workers purge
-expired unacknowledged events in bounded batches and log counts per subscription; monitor
-backlog, oldest age and `backfill_pending` through `stats()` to stay inside `retention_s`.
+batches. Every consumer retains its registration's permanent generation UUID. Each pull checks it
+under the existing registration row lock, held until acknowledgement or rollback. Removal or
+replacement ends that iterator permanently, even if the name is reused before its next pull.
+Workers purge expired unacknowledged events in bounded batches and log counts per subscription;
+monitor backlog, oldest age and `backfill_pending` through `stats()` to stay inside `retention_s`.
 
 ### Backfill at registration
 
@@ -314,8 +316,9 @@ that omit `backfill`, with its original absolute time boundary and remaining sta
 updates apply to the remaining chunks. Register consumers at deploy time and never unsubscribe
 as part of a restart.
 
-Registration is one upsert that installs a marker (a generation UUID, the absolute `since`
-boundary and per-state cursors) only for a new backfilling name. After it commits, the consumer
+Registration is one upsert that installs a permanent generation UUID for every new name and a
+backfill marker (the absolute `since` boundary and per-state cursors) only when requested. Filter
+updates and backfill completion preserve the generation. After registration commits, the consumer
 captures the virtual transaction IDs currently owned by other connections to this database and
 polls that fixed set in `pg_locks` every 250 ms, in autocommit, until all of them end; later
 transactions do not extend the wait. Any transition that read the old subscription list has
@@ -331,12 +334,14 @@ awaiting a backfilling subscription. Every five seconds, warnings name the remai
 IDs, PIDs, users, application names and transaction ages where visible. The barrier holds no
 registration locks between polls, so unrelated transitions, reactions and feed pulls continue.
 Cancellation or connection loss leaves the marker for a later consumer, which captures a fresh
-set before resuming.
+set before resuming. Each wait poll also checks the registration generation without holding a
+row lock; deletion or replacement ends the obsolete consumer's wait and yields a closed iterator.
 
 Backfill runs in transactions of at most 5,000 rows, one state at a time in alphabetical order
 and ascending task-id order, with `FOR NO KEY UPDATE` on the registration so publishers and
-pulls continue. Each chunk checks the marker's generation under that lock, so an old consumer
-cannot act on a deleted and recreated name. INFO logs report start/resume, states, boundary,
+pulls continue. Each chunk checks the permanent generation under that lock before reading the
+marker, including when the replacement has no pending backfill. An old consumer therefore cannot
+act on a deleted and recreated name. INFO logs report start/resume, states, boundary,
 inserted rows, chunks and elapsed time; DEBUG logs report each chunk. `stats()` reports
 `backfill_pending` while the marker exists, including during the initial wait.
 
@@ -352,13 +357,13 @@ numbers: during this window dedupe by that tuple or make reactions idempotent pe
 
 | Failure | Result |
 |---|---|
-| Any subscription on a schema missing `subscriptions.backfill` | `ConfigurationError` naming `fronta db init`; nothing registered |
+| Any subscription on a schema missing `subscriptions.backfill` or `generation` | `ConfigurationError` naming `fronta db init`; nothing registered |
 | Older transaction stays open | Registration remains pending; only the starting consumer waits, with periodic blocker warnings |
 | Connection lost or consumer cancelled | Committed chunks and progress remain; subscribe with the same name to resume |
 | Chunk exceeds `statement_timeout_s` | The whole chunk, including its marker update, rolls back; the error surfaces; a later call resumes |
 | Concurrent creators or resumers | One marker; chunks serialize and re-read progress, without duplicate inserts |
 | Unsubscribe during backfill | Waits for the current chunk, deletes registration and events; the loop stops at its next chunk and the first pull ends |
-| Name deleted and recreated while an old consumer is paused | Its next chunk stops without touching the replacement marker |
+| Name deleted and recreated while an old consumer is paused | Its next barrier poll, chunk or pull ends the old consumer without touching the replacement marker or events |
 | Source task purged between chunks | Its snapshot is no longer available |
 
 Backfill adds one event insert per retained match, once per registration: roughly completion
@@ -496,12 +501,13 @@ listener, renewal, hints); each feed consumer uses one.
 ### Initialization and upgrades
 
 `fronta db init` installs tables, additive columns, the versioned claim function and
-`fronta.meta.schema_version` atomically and idempotently, and brings an older schema in place
-without a table rewrite. It defaults to a five-minute statement deadline including lock waits;
-`--timeout SECONDS` or `FRONTA_STATEMENT_TIMEOUT_S` overrides it. `fronta db sql` prints the
+`fronta.meta.schema_version` atomically and idempotently. The 0.6.0 upgrade leaves queue and event
+rows in place and assigns a permanent UUID to every existing subscription; assigning UUIDs can
+rewrite the subscription table. It defaults to a five-minute statement deadline including lock
+waits; `--timeout SECONDS` or `FRONTA_STATEMENT_TIMEOUT_S` overrides it. `fronta db sql` prints the
 same transactional DDL for administrator review. Init never lowers a newer installed version.
 Workers and servers refuse to start behind the required version and name the command;
-subscriptions and statistics report it when the `subscriptions.backfill` column is missing.
+subscriptions require `subscriptions.backfill` and `generation`, and statistics require `backfill`.
 
 Upgrade procedure for every release: pause producers and gracefully stop old workers, letting
 running attempts settle; install the new release and run `fronta db init`; start the new

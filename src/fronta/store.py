@@ -14,7 +14,6 @@ import re
 import time
 from importlib import resources
 from typing import TYPE_CHECKING, Any, TypedDict
-from uuid import uuid4
 
 import psycopg
 from psycopg import sql
@@ -55,9 +54,13 @@ CANCEL_CHANNEL = "fronta_cancel"
 
 
 class Backfill(TypedDict):
-    generation: str
     since: str | None
     pending: dict[str, int]
+
+
+class Subscription(TypedDict):
+    generation: UUID
+    backfill: Backfill | None
 
 
 _TASK_COLUMNS = (
@@ -633,25 +636,24 @@ async def register_subscription(
     states: list[str],
     types: list[str] | None,
     backfill: bool | float = False,
-) -> Backfill | None:
-    # Only INSERT installs a marker. Concurrent creators/resumers return the same generation
-    # and progress; changing filters never starts another backfill or moves its time window.
+) -> Subscription:
+    # Only INSERT installs a generation and marker. The generation outlives backfill and
+    # filter updates, so a consumer can never attach to a replacement with the same name.
     window_s = None if isinstance(backfill, bool) else backfill
     row = await (
         await conn.execute(
             "INSERT INTO fronta.subscriptions (name, states, types, backfill) "
             "VALUES (%s, %s, %s, CASE WHEN %s THEN "
-            "jsonb_build_object('generation', %s::text, 'since', "
+            "jsonb_build_object('since', "
             "CASE WHEN %s::float8 IS NOT NULL THEN "
             "clock_timestamp() - make_interval(secs => %s) END, 'pending', %s::jsonb) END) "
             "ON CONFLICT (name) DO UPDATE SET states = EXCLUDED.states, types = EXCLUDED.types "
-            "RETURNING backfill",
+            "RETURNING generation, backfill",
             (
                 name,
                 states,
                 types,
                 backfill is not False,
-                str(uuid4()),
                 window_s,
                 window_s,
                 json.dumps(dict.fromkeys(states, 0)),
@@ -659,12 +661,11 @@ async def register_subscription(
         )
     ).fetchone()
     assert row is not None  # noqa: S101  # upsert returns the marker
-    return (
-        None
-        if row[0] is None
-        else Backfill(
-            generation=row[0]["generation"], since=row[0]["since"], pending=row[0]["pending"]
-        )
+    return Subscription(
+        generation=row[0],
+        backfill=None
+        if row[1] is None
+        else Backfill(since=row[1]["since"], pending=row[1]["pending"]),
     )
 
 
@@ -690,26 +691,23 @@ async def backfill_blockers(
 
 
 async def backfill_chunk(
-    conn: Conn, name: str, generation: str, limit: int
+    conn: Conn, name: str, generation: UUID, limit: int
 ) -> tuple[int, bool] | None:
     """Commit events and progress together; None means the registration was removed/replaced."""
     async with conn.transaction():
         row = await (
             await conn.execute(
-                "SELECT types, backfill FROM fronta.subscriptions "
+                "SELECT generation, types, backfill FROM fronta.subscriptions "
                 "WHERE name = %s FOR NO KEY UPDATE",
                 (name,),
             )
         ).fetchone()
-        if row is None:
+        # Validate identity even when the replacement's backfill has already finished.
+        if row is None or row[0] != generation:
             return None
-        if row[1] is None:
+        if row[2] is None:
             return 0, False
-        types, marker = row
-        # A cleared barrier for a deleted registration cannot authorize chunks for a new one
-        # with the same name. Check under the row lock before inserting or clearing anything.
-        if marker["generation"] != generation:
-            return None
+        _, types, marker = row
         pending = marker["pending"]
         count = 0
         if pending:

@@ -15,17 +15,26 @@ follow each release's database initialization instructions.
   creators and consumers, and finishes before the feed opens. Live/backfill duplicates require
   `(id, attempt, state)` dedupe during backfill or idempotent reactions.
 - Registration waits on a captured set of virtual transaction locks without stalling unrelated
-  queue work. Resuming consumers capture afresh; generation checks prevent an old consumer from
-  modifying a replacement registration. Long waits report blocking sessions. Prepared
-  transactions and imported snapshots are outside the backfill guarantee.
+  queue work. Resuming consumers capture afresh; permanent registration generations prevent an old
+  consumer from backfilling or consuming a replacement registration. Long waits report blocking
+  sessions. Prepared transactions and imported snapshots are outside the backfill guarantee.
 - Per-subscription `backfill_pending` in `stats()`, and backfill progress logging.
 
 ### Changed
 
-- `fronta db init` adds nullable `subscriptions.backfill` JSONB without changing the schema
-  version or transition statements. Run it before using any 0.6.0 client. Subscriptions and
-  statistics require the column; there are no fallbacks for the 0.5.0 schema. Stop old clients,
-  initialize the database, then start the new release; mixed-version operation is unsupported.
+- `fronta db init` adds nullable `subscriptions.backfill` JSONB and a permanent `generation` UUID
+  without changing the schema version or transition statements. Run it before using any 0.6.0
+  client. Subscriptions require both columns, and statistics require `backfill`; there are no
+  fallbacks for the 0.5.0 schema. Stop old clients, initialize the database, then start the new
+  release; mixed-version operation is unsupported.
+
+### Fixed
+
+- Keep the pidfd syscall fallback for Linux Python builds that omit the standard-library wrappers,
+  including uv-managed Python. Process ownership checks and pidfd-based signalling are preserved.
+- Deleted subscriptions end their consumers permanently, including when the name is recreated
+  during startup, after backfill completes, or between batches. Obsolete consumers waiting on a
+  registration barrier stop without waiting for unrelated transactions to finish.
 
 ### Removed
 

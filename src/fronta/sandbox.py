@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
+import errno
 import json
 import os
 import signal
@@ -30,9 +32,25 @@ SANDBOX_ENV = "FRONTA_SANDBOX_ID"
 WORKER_ENV = "FRONTA_WORKER_ID"
 PROBE_OUTPUT = b"FRONTA_SANDBOX_OK\n"
 _MERGED_USR_DIRS = ("/bin", "/sbin", "/lib", "/lib64", "/lib32", "/libx32")
+_SYS_PIDFD_OPEN = 434
+_SYS_PIDFD_SEND_SIGNAL = 424
 _STATUS_LINE_TIMEOUT_S = 30.0
 _STDERR_CAP = 64 * 1024
 _WORKER_ID_PARTS = 3  # host:pid:starttime
+
+_libc: ctypes.CDLL | None = None
+"""Lazy: portable SDK imports must not load Linux-only APIs. Some Linux CPython builds,
+including uv-managed builds, omit the pidfd wrappers despite a capable running kernel."""
+
+
+def _syscall(number: int, *args: object) -> int:
+    global _libc  # noqa: PLW0603  # lazy, process-wide handle
+    libc = _libc
+    if libc is None:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.syscall.restype = ctypes.c_long
+        _libc = libc
+    return int(libc.syscall(number, *args))
 
 
 def require_linux() -> None:
@@ -96,20 +114,36 @@ class Pidfd:
     @classmethod
     def open(cls, pid: int) -> Pidfd | None:
         """None when the process is already gone (ESRCH)."""
-        try:
-            return cls(os.pidfd_open(pid))
-        except ProcessLookupError:
-            return None
+        if hasattr(os, "pidfd_open"):
+            try:
+                return cls(os.pidfd_open(pid))
+            except ProcessLookupError:
+                return None
+        fd = _syscall(_SYS_PIDFD_OPEN, ctypes.c_int(pid), ctypes.c_uint(0))
+        if fd < 0:
+            err = ctypes.get_errno()
+            if err == errno.ESRCH:
+                return None
+            raise OSError(err, os.strerror(err))
+        return cls(fd)
 
     def send_signal(self, sig: signal.Signals) -> bool:
         """False when the process already exited (or the pidfd is closed)."""
         if self.fd < 0:
             return False
-        try:
-            signal.pidfd_send_signal(self.fd, sig)
-        except ProcessLookupError:
+        if hasattr(signal, "pidfd_send_signal"):
+            try:
+                signal.pidfd_send_signal(self.fd, sig)
+            except ProcessLookupError:
+                return False
+            return True
+        rc = _syscall(_SYS_PIDFD_SEND_SIGNAL, ctypes.c_int(self.fd), ctypes.c_int(sig), None, 0)
+        if rc == 0:
+            return True
+        err = ctypes.get_errno()
+        if err == errno.ESRCH:
             return False
-        return True
+        raise OSError(err, os.strerror(err))
 
     async def wait_exit(self, timeout_s: float) -> bool:
         """True once the process has exited (pidfd readable); False on timeout."""

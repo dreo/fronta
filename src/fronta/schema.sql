@@ -112,3 +112,4 @@ ALTER TABLE fronta.events SET (autovacuum_vacuum_scale_factor = 0.01,
 ALTER TABLE fronta.task_types ADD COLUMN IF NOT EXISTS paused boolean NOT NULL DEFAULT false;
 ALTER TABLE fronta.tasks ADD COLUMN IF NOT EXISTS metadata jsonb;
 ALTER TABLE fronta.subscriptions ADD COLUMN IF NOT EXISTS backfill jsonb;
+ALTER TABLE fronta.subscriptions ADD COLUMN IF NOT EXISTS generation uuid NOT NULL DEFAULT gen_random_uuid();

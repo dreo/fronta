@@ -93,7 +93,9 @@ async def test_backfill_after_upgrade_preserves_history_and_live_events(conn, se
         old = [await thing_v1.enqueue(ThingV1(a=i)) for i in range(8)]
         await wait_until(lambda: _all_succeeded(conn, old))
     # Upgrade with workers stopped, then reconcile retained history and new completions.
-    await conn.execute("ALTER TABLE fronta.subscriptions DROP COLUMN backfill")
+    await conn.execute(
+        "ALTER TABLE fronta.subscriptions DROP COLUMN backfill, DROP COLUMN generation"
+    )
     try:
         await store.init_schema(conn)
         await store.init_schema(conn)

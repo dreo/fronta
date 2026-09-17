@@ -16,7 +16,15 @@ from fronta import State, Worker, store, subscribe, unsubscribe
 from fronta import feed as feed_module
 from fronta.model import NewTask, Policy
 from tests.conftest import MAINT_DSN, wait_until
-from tests.test_feed import backlog, pending_marker, pull, register, retained, snapshots
+from tests.test_feed import (
+    backlog,
+    pending_marker,
+    pull,
+    register,
+    retained,
+    snapshots,
+    subscription_generation,
+)
 from tests.workers import In, sleep_task
 
 
@@ -269,13 +277,13 @@ async def test_recreated_name_cannot_use_previous_generations_barrier(
     ):
         old = tg.create_task(register(settings, states=[State.QUEUED], backfill=True))
         await entered.wait()
-        old_marker = await pending_marker(conn)
+        old_generation = await subscription_generation(conn)
         await unsubscribe("workflow")
         task_id = await store.enqueue(writer, NewTask("sleep", "{}", Policy()))
         new = tg.create_task(register(settings, states=[State.QUEUED], backfill=True))
         await wait_captured(captures, 2)
         new_marker = await pending_marker(conn)
-        assert new_marker["generation"] != old_marker["generation"]
+        assert await subscription_generation(conn) != old_generation
         release.set()
         await old
         assert not new.done()

@@ -18,6 +18,7 @@ from fronta.model import State, TaskEvent
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
+    from uuid import UUID
 
     from fronta.config import Settings
 
@@ -46,7 +47,7 @@ async def _register(
     types: list[str] | None,
     *,
     backfill: bool | float,
-) -> store.Backfill | None:
+) -> store.Subscription:
     try:
         return await store.register_subscription(conn, name, states, types, backfill)
     except psycopg.errors.UndefinedColumn as exc:
@@ -54,7 +55,7 @@ async def _register(
         raise ConfigurationError(msg) from exc
 
 
-async def _wait_for_transactions(conn: store.Conn, name: str) -> None:
+async def _wait_for_transactions(conn: store.Conn, name: str, generation: UUID) -> bool:
     # Registration has committed. Every transaction that could have read the old subscription
     # set is either finished or owns one of these locks. Capture once: later transactions see
     # the registration and must not extend this wait. Autocommit releases our own transaction
@@ -63,6 +64,14 @@ async def _wait_for_transactions(conn: store.Conn, name: str) -> None:
     transactions = [row[0] for row in blockers]
     warn_at = time.monotonic() + _BACKFILL_WARN_S
     while blockers:
+        # An obsolete consumer need not wait for an unrelated old transaction to finish.
+        registration = await (
+            await conn.execute(
+                "SELECT generation FROM fronta.subscriptions WHERE name = %s", (name,)
+            )
+        ).fetchone()
+        if registration is None or registration[0] != generation:
+            return False
         if time.monotonic() >= warn_at:
             for vxid, pid, user, application, age in blockers:
                 log.warning(
@@ -79,9 +88,10 @@ async def _wait_for_transactions(conn: store.Conn, name: str) -> None:
             warn_at = time.monotonic() + _BACKFILL_WARN_S
         await asyncio.sleep(_BACKFILL_POLL_S)
         blockers = await store.backfill_blockers(conn, transactions)
+    return True
 
 
-async def _backfill(conn: store.Conn, name: str, marker: store.Backfill) -> None:
+async def _backfill(conn: store.Conn, name: str, generation: UUID, marker: store.Backfill) -> bool:
     started = time.monotonic()
     log.info(
         "feed backfill start/resume name=%s states=%s since=%s",
@@ -89,25 +99,27 @@ async def _backfill(conn: store.Conn, name: str, marker: store.Backfill) -> None
         sorted(marker["pending"]),
         marker["since"],
     )
-    await _wait_for_transactions(conn, name)
     rows = chunks = 0
-    pending = True
-    while pending:
-        result = await store.backfill_chunk(conn, name, marker["generation"], _BACKFILL_CHUNK)
-        if result is None:
-            log.info("feed backfill stopped name=%s: registration removed or replaced", name)
-            return
-        count, pending = result
-        rows += count
-        chunks += 1
-        log.debug("feed backfill chunk name=%s rows=%s pending=%s", name, count, pending)
-    log.info(
-        "feed backfill finished name=%s rows=%s chunks=%s seconds=%.3f",
-        name,
-        rows,
-        chunks,
-        time.monotonic() - started,
-    )
+    if await _wait_for_transactions(conn, name, generation):
+        while True:
+            result = await store.backfill_chunk(conn, name, generation, _BACKFILL_CHUNK)
+            if result is None:
+                break
+            count, pending = result
+            rows += count
+            chunks += 1
+            log.debug("feed backfill chunk name=%s rows=%s pending=%s", name, count, pending)
+            if not pending:
+                log.info(
+                    "feed backfill finished name=%s rows=%s chunks=%s seconds=%.3f",
+                    name,
+                    rows,
+                    chunks,
+                    time.monotonic() - started,
+                )
+                return True
+    log.info("feed backfill stopped name=%s: registration removed or replaced", name)
+    return False
 
 
 class Batch:
@@ -129,8 +141,12 @@ class Batch:
 
 
 class Feed:
-    def __init__(self, conn: store.Conn, name: str, settings: Settings, batch_size: int) -> None:
+    def __init__(
+        self, conn: store.Conn, name: str, generation: UUID, settings: Settings, batch_size: int
+    ) -> None:
         self.conn, self.name, self.settings, self.batch_size = conn, name, settings, batch_size
+        self._generation = generation
+        self._closed = False
         self._batch: Batch | None = None
 
     def __aiter__(self) -> Feed:
@@ -143,6 +159,8 @@ class Feed:
         await self.conn.rollback()
 
     async def __anext__(self) -> Batch:
+        if self._closed:
+            raise StopAsyncIteration
         await self._rollback()
         try:
             while True:
@@ -152,11 +170,12 @@ class Feed:
                         pass
                 registration = await (
                     await self.conn.execute(
-                        "SELECT name FROM fronta.subscriptions WHERE name = %s FOR KEY SHARE",
+                        "SELECT generation FROM fronta.subscriptions WHERE name = %s FOR KEY SHARE",
                         (self.name,),
                     )
                 ).fetchone()
-                if registration is None:
+                if registration is None or registration[0] != self._generation:
+                    self._closed = True
                     raise StopAsyncIteration
                 rows = await (
                     await self.conn.execute(
@@ -220,17 +239,18 @@ async def subscribe(  # noqa: PLR0913  # additive public call arguments
         **runtime.connection_kwargs(current, "fronta-feed"),
     ) as conn:
         await conn.execute("LISTEN fronta_feed")
-        marker = await _register(
+        registration = await _register(
             conn,
             name,
             selected,
             None if types is None else list(types),
             backfill=backfill,
         )
-        if marker is not None:
-            await _backfill(conn, name, marker)
+        generation, marker = registration["generation"], registration["backfill"]
+        ready = marker is None or await _backfill(conn, name, generation, marker)
         await conn.set_autocommit(False)
-        feed = Feed(conn, name, current, batch_size)
+        feed = Feed(conn, name, generation, current, batch_size)
+        feed._closed = not ready
         try:
             yield feed
         finally:

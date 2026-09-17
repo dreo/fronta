@@ -28,3 +28,9 @@ def test_db_sql_includes_additive_backfill_once():
         )
         == 1
     )
+    assert (
+        result.output.count(
+            "ALTER TABLE fronta.subscriptions ADD COLUMN IF NOT EXISTS generation uuid"
+        )
+        == 1
+    )
