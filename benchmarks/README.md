@@ -1,7 +1,7 @@
 # Benchmarks
 
 [Results](RESULTS.md) record measured capacity and fault recovery. These opt-in workloads use real
-worker processes and production queue paths. Each run creates a random `fronta_stress_*` database
+worker processes and production queue paths. Each run creates a random `fronta_*` database
 and drops only that database afterwards; the maintenance role needs `CREATEDB`.
 
 ## Run
@@ -23,7 +23,8 @@ uv run --locked python -m tests.stress.grade .scratch/benchmarks/throughput.json
   --output .scratch/benchmarks/throughput-grade.json
 ```
 
-This profile assumes enough memory for the buffers; see [configuration](../docs/postgresql.md).
+This profile assumes enough memory for the buffers; see
+[PostgreSQL configuration](../REFERENCE.md#postgresql-configuration).
 Existing output paths are refused. `--cases REGEX`, `--jobs N`, `--label TEXT`, and `--seed N`
 control selection and run order. The matrix controls workloads, including worker/concurrency
 counts, types, payload sizes, producer counts, progress, limits and retention. It does not change
@@ -49,6 +50,30 @@ The three-run throughput grader retains fixed comparison bounds and the compact 
 [payload baseline](payload-baseline.json). It requires `fsync`, `synchronous_commit` and
 `full_page_writes` to be on. Results from earlier source revisions remain labelled as such.
 
+## Feed backfill
+
+The feed-backfill validation uses the `feed` matrix's worker/producer/concurrency counts,
+one million retained terminal rows and sustained SDK producers at 3,000 tasks/s:
+
+```bash
+uv run --locked python -m tests.stress.acceptance backfill --output .scratch/benchmarks/backfill.json
+```
+
+The backfill run records chunk rate, claim latency in the ten seconds around registration,
+identity reconciliation of acknowledged events, duplicates, worker exits, and worker progress
+throughout a 30-second caller transaction while the new consumer waits on virtual transaction
+locks: every complete five-second interval must contain completions, and the consumer must stay
+pending until the blocker ends, then finish. The report records lock poll count and client query
+durations during the wait; these are measured costs, not a claim that polling is free.
+
+The storage gate runs two `VACUUM (ANALYZE, INDEX_CLEANUP ON) fronta.events` cycles after
+consumption and requires zero dead tuples and a stable heap/index footprint; heap and index
+sizes are reported separately. Ordinary vacuum makes index space reusable but does not shrink
+files to their original size, and default `AUTO` index cleanup may leave a few dead line
+pointers, which is why cleanup is requested explicitly. `--history`, `--rate`, `--seconds` and
+`--matrix` allow smaller diagnostics; only the default million-row run is the capacity check.
+Run on an otherwise idle instance and retain the JSON report with the measured source hash.
+
 ## Sustained load and faults
 
 ```bash
@@ -69,11 +94,6 @@ reported separately from later recovery; an overall average does not hide it.
 `--mode soak --seconds 600 --diagnostic --hold-at 60 --hold-for 300` checks a shorter transaction
 hold. `--history N` preloads retained terminal rows. Reports keep completed per-minute samples
 if a run fails. Short runs cannot establish multi-hour storage stability.
-
-The rollout harness (`tests.stress.acceptance rollout --legacy PATH --output PATH`) accepts a
-legacy source checkout. It stops legacy workers for additive column changes, reconnects them for
-an unlimited-type overlap, then drains old workers and prunes. Follow the release-specific
-[upgrade procedure](../docs/reference.md#database-initialization-and-upgrades).
 
 Keep experimental output in `.scratch` or outside the checkout. Curated reports in `results/`
 include provenance hashes; large temporary logs, telemetry archives and abandoned experiments

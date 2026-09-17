@@ -39,8 +39,8 @@ _STDERR_CAP = 64 * 1024
 _WORKER_ID_PARTS = 3  # host:pid:starttime
 
 _libc: ctypes.CDLL | None = None
-"""Loaded on first use: importing Fronta must work on any platform; only running sandboxed
-processes needs Linux (`require_linux()` guards the entry points)."""
+"""Lazy: portable SDK imports must not load Linux-only APIs. Some Linux CPython builds,
+including uv-managed builds, omit the pidfd wrappers despite a capable running kernel."""
 
 
 def _syscall(number: int, *args: object) -> int:
@@ -100,7 +100,7 @@ def is_worker_alive(worker: str) -> bool | None:
 
 
 class Pidfd:
-    """A pidfd (raw syscalls: this CPython build may lack `os.pidfd_open`).
+    """A process handle that a recycled pid can never alias.
 
     `close()` while `wait_exit()` is in flight is deferred until the wait ends, so the descriptor
     number can never be recycled under a registered reader.
@@ -125,7 +125,7 @@ class Pidfd:
             if err == errno.ESRCH:
                 return None
             raise OSError(err, os.strerror(err))
-        return cls(int(fd))
+        return cls(fd)
 
     def send_signal(self, sig: signal.Signals) -> bool:
         """False when the process already exited (or the pidfd is closed)."""

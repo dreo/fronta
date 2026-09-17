@@ -1,0 +1,358 @@
+{
+  "created_at": "2026-09-17T13:38:22.052941+00:00",
+  "phase": "backfill",
+  "source_sha256": "3564c01b5f8e4b5c6a8fd063e60ace752a82c0c0687a56a5c118d31308dada06",
+  "python": "3.13.13 (main, May 10 2026, 19:26:54) [Clang 22.1.3 ]",
+  "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+  "psycopg": "3.3.4",
+  "postgres": "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit",
+  "durability": [
+    {
+      "name": "fsync",
+      "setting": "on"
+    },
+    {
+      "name": "full_page_writes",
+      "setting": "on"
+    },
+    {
+      "name": "max_wal_size",
+      "setting": "4096"
+    },
+    {
+      "name": "shared_buffers",
+      "setting": "262144"
+    },
+    {
+      "name": "synchronous_commit",
+      "setting": "on"
+    }
+  ],
+  "result": {
+    "config": {
+      "name": "feed",
+      "workers": 8,
+      "concurrency": 256,
+      "producers": 4,
+      "clients": 8,
+      "jobs": 180000,
+      "live_enqueue": true,
+      "subscription": true,
+      "rate_s": 750.0,
+      "timeout_s": 600,
+      "identity": true
+    },
+    "retained": 1000000,
+    "live_jobs": 180000,
+    "target_completion_rate_s": 3000,
+    "backfill_seconds": 6.970539811998606,
+    "backfilled_rows": 1033562,
+    "chunks": 209,
+    "backfill_rows_per_s": 148275.7473418196,
+    "drain_seconds": 49.380348907987354,
+    "events": 1200785,
+    "duplicates": 20785,
+    "missing": 0,
+    "unexpected": 0,
+    "claim_10s": {
+      "n": 7451,
+      "mean_ms": 5.190259320003962,
+      "p50_ms": 5.078747984953225,
+      "p95_ms": 7.337484013987705,
+      "p99_ms": 8.61449897638522,
+      "max_ms": 93.69449698715471
+    },
+    "worker_metrics": {
+      "operations": {
+        "claim": {
+          "n": 45433,
+          "mean_ms": 12.54206762283989,
+          "p50_ms": 6.368408998241648,
+          "p95_ms": 38.74207899207249,
+          "p99_ms": 94.63146401685663,
+          "max_ms": 157.3357539891731
+        },
+        "complete": {
+          "n": 44763,
+          "mean_ms": 8.002281412251554,
+          "p50_ms": 4.823788010980934,
+          "p95_ms": 27.22155099036172,
+          "p99_ms": 59.86828601453453,
+          "max_ms": 118.25250298716128
+        }
+      },
+      "empty_claims": 90495,
+      "batch_sizes": {
+        "claim": {
+          "calls": 135976,
+          "items": 285000,
+          "mean": 2.0959581102547507
+        },
+        "complete": {
+          "calls": 44763,
+          "items": 285000,
+          "mean": 6.366865491589036
+        }
+      },
+      "event_loop_lag": {
+        "n": 15459,
+        "mean_ms": 0.7644971783733133,
+        "p50_ms": 0.4875520127825411,
+        "p95_ms": 1.8168669950682643,
+        "p99_ms": 3.651894006179643,
+        "max_ms": 105.16617798130028
+      },
+      "worker_cpu_s": 330.26416300000005,
+      "worker_cpu_cores": 3.3453509689689107,
+      "worker_peak_rss_sum_bytes": 972619776,
+      "pool_counters": {
+        "requests_num": 180740,
+        "requests_queued": 31,
+        "requests_wait_ms": 110,
+        "usage_ms": 1008731
+      },
+      "completion_timeline": [
+        {
+          "from_s": 0,
+          "jobs": 27730,
+          "tasks_per_s": 2773.0
+        },
+        {
+          "from_s": 10,
+          "jobs": 30000,
+          "tasks_per_s": 3000.0
+        },
+        {
+          "from_s": 20,
+          "jobs": 29992,
+          "tasks_per_s": 2999.2
+        },
+        {
+          "from_s": 30,
+          "jobs": 29992,
+          "tasks_per_s": 2999.2
+        },
+        {
+          "from_s": 40,
+          "jobs": 29941,
+          "tasks_per_s": 2994.1
+        },
+        {
+          "from_s": 50,
+          "jobs": 30013,
+          "tasks_per_s": 3001.3
+        },
+        {
+          "from_s": 60,
+          "jobs": 23524,
+          "tasks_per_s": 2352.4
+        },
+        {
+          "from_s": 70,
+          "jobs": 29734,
+          "tasks_per_s": 2973.4
+        },
+        {
+          "from_s": 80,
+          "jobs": 29846,
+          "tasks_per_s": 2984.6
+        },
+        {
+          "from_s": 90,
+          "jobs": 24228,
+          "tasks_per_s": 2777.3820875736837
+        }
+      ]
+    },
+    "worker_exits": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "worker_errors": [],
+    "bad_tasks": 0,
+    "producer_metrics": [
+      {
+        "jobs": 45000,
+        "elapsed_s": 60.0072191329964,
+        "cpu_s": 41.969012,
+        "identity": {
+          "count": 45000,
+          "sum": 49049163294,
+          "xor": 209485308495057590506198585490577507009
+        }
+      },
+      {
+        "jobs": 45000,
+        "elapsed_s": 60.01156717998674,
+        "cpu_s": 42.102699,
+        "identity": {
+          "count": 45000,
+          "sum": 49050316292,
+          "xor": 10520180853272849879578364191996827492
+        }
+      },
+      {
+        "jobs": 45000,
+        "elapsed_s": 60.01092846199754,
+        "cpu_s": 42.058752,
+        "identity": {
+          "count": 45000,
+          "sum": 49050184403,
+          "xor": 113328446424694131202584971055819636176
+        }
+      },
+      {
+        "jobs": 45000,
+        "elapsed_s": 60.016596263012616,
+        "cpu_s": 41.936931,
+        "identity": {
+          "count": 45000,
+          "sum": 49050426011,
+          "xor": 34529368889417286625881839620322971207
+        }
+      }
+    ],
+    "storage": {
+      "vacuum_sql": "VACUUM (ANALYZE, INDEX_CLEANUP ON) fronta.events",
+      "before": {
+        "heap_bytes": 0,
+        "index_bytes": 16384,
+        "index_main_bytes": 16384,
+        "n_live_tup": 0,
+        "n_dead_tup": 0,
+        "vacuum_count": 0,
+        "autovacuum_count": 0
+      },
+      "after_backfill": {
+        "heap_bytes": 89104384,
+        "index_bytes": 41820160,
+        "index_main_bytes": 41820160,
+        "n_live_tup": 930168,
+        "n_dead_tup": 0,
+        "vacuum_count": 0,
+        "autovacuum_count": 0
+      },
+      "after_vacuum": [
+        {
+          "heap_bytes": 0,
+          "index_bytes": 45850624,
+          "index_main_bytes": 45793280,
+          "n_live_tup": 0,
+          "n_dead_tup": 0,
+          "vacuum_count": 1,
+          "autovacuum_count": 1
+        },
+        {
+          "heap_bytes": 0,
+          "index_bytes": 45850624,
+          "index_main_bytes": 45793280,
+          "n_live_tup": 0,
+          "n_dead_tup": 0,
+          "vacuum_count": 2,
+          "autovacuum_count": 1
+        }
+      ],
+      "stable_after_two_vacuums": true,
+      "returned_to_initial_bytes": false
+    },
+    "contention": {
+      "start": 150452.885716546,
+      "held_until": 150482.916253667,
+      "seconds": 30.11405718300375,
+      "poll_interval_s": 0.25,
+      "poll_count": 120,
+      "poll_total_s": 0.26954815280623734,
+      "poll_mean_ms": 2.2462346067186445,
+      "poll_max_ms": 8.386317000258714,
+      "passed": true,
+      "completions_per_5s": [
+        14891,
+        14925,
+        14924,
+        14883,
+        14884,
+        14918
+      ],
+      "worker_metrics_while_waiting": {
+        "operations": {
+          "claim": {
+            "n": 4925,
+            "mean_ms": 43.08905928123856,
+            "p50_ms": 34.19604798546061,
+            "p95_ms": 103.71674998896196,
+            "p99_ms": 116.79086100775748,
+            "max_ms": 157.3357539891731
+          },
+          "complete": {
+            "n": 4924,
+            "mean_ms": 26.29606213341451,
+            "p50_ms": 20.156633021542802,
+            "p95_ms": 68.38074998813681,
+            "p99_ms": 88.13083200948313,
+            "max_ms": 118.25250298716128
+          }
+        },
+        "empty_claims": 2370,
+        "batch_sizes": {
+          "claim": {
+            "calls": 135976,
+            "items": 285000,
+            "mean": 2.0959581102547507
+          },
+          "complete": {
+            "calls": 44763,
+            "items": 285000,
+            "mean": 6.366865491589036
+          }
+        },
+        "event_loop_lag": {
+          "n": 4722,
+          "mean_ms": 0.880111387498577,
+          "p50_ms": 0.5096420238260152,
+          "p95_ms": 2.3890990007203046,
+          "p99_ms": 5.657192977378142,
+          "max_ms": 105.16617798130028
+        },
+        "worker_cpu_s": 69.30971900000003,
+        "worker_cpu_cores": 2.3079746699414643,
+        "worker_peak_rss_sum_bytes": 972619776,
+        "pool_counters": {
+          "requests_num": 12196,
+          "requests_queued": 0,
+          "requests_wait_ms": 0,
+          "usage_ms": 360215
+        },
+        "completion_timeline": [
+          {
+            "from_s": 0,
+            "jobs": 29796,
+            "tasks_per_s": 2979.6
+          },
+          {
+            "from_s": 10,
+            "jobs": 29807,
+            "tasks_per_s": 2980.7
+          },
+          {
+            "from_s": 20,
+            "jobs": 29802,
+            "tasks_per_s": 2980.2
+          },
+          {
+            "from_s": 30,
+            "jobs": 262,
+            "tasks_per_s": 8579.72171043787
+          }
+        ]
+      }
+    },
+    "passed": true
+  },
+  "passed": true
+}

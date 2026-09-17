@@ -42,7 +42,7 @@ class Context[StateT](Protocol):
     async def progress(self, value: JSON) -> None:
         """Store progress (any JSON value up to the progress cap; over-cap raises)."""
 
-    async def enqueue[I: BaseModel](  # noqa: PLR0913  # public signature fixed by SPEC.md
+    async def enqueue[I: BaseModel](  # noqa: PLR0913  # the public enqueue signature
         self,
         task: TaskDefinition[I, Any],
         input: I,
@@ -142,7 +142,7 @@ class TaskDefinition[InputT: BaseModel, OutputT]:
             raise InvalidInput(msg) from exc
         return text
 
-    async def enqueue(  # noqa: PLR0913  # public signature fixed by SPEC.md section 3
+    async def enqueue(  # noqa: PLR0913  # the public enqueue signature
         self,
         input: InputT | Mapping[str, Any],
         *,
@@ -249,7 +249,7 @@ def _policy(
     )
 
 
-def task[InputT: BaseModel, OutputT](  # noqa: PLR0913  # public signature fixed by SPEC.md
+def task[InputT: BaseModel, OutputT](  # noqa: PLR0913  # one keyword per policy field
     name: str,
     *,
     input: type[InputT],
@@ -277,7 +277,7 @@ def task[InputT: BaseModel, OutputT](  # noqa: PLR0913  # public signature fixed
     return decorate
 
 
-def process_task[InputT: BaseModel](  # noqa: PLR0913  # public signature fixed by SPEC.md
+def process_task[InputT: BaseModel](  # noqa: PLR0913  # one keyword per policy field
     name: str,
     argv: tuple[str, ...] | list[str],
     *,

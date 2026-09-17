@@ -47,6 +47,12 @@ FAST = {
 }
 
 
+def delay_bounds(backoff, retry: int) -> tuple[float, float]:
+    """Inclusive `[min, max]` delay of retry `retry` (1-based), as the SQL computes it."""
+    nominal = min(backoff.cap_s, backoff.base_s * backoff.factor ** min(retry - 1, 64))
+    return nominal / 2, nominal
+
+
 def _require_dsn() -> str:
     if MAINT_DSN:
         return MAINT_DSN

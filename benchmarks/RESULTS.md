@@ -3,7 +3,53 @@
 These measurements describe specific workloads and hardware, with synchronous task commits.
 They are not throughput guarantees for arbitrary handlers. [Workloads and replay](README.md).
 
-## Release validation
+## Feed backfill (0.6.0 development)
+
+2026-09-17, source `3564c01b5f8e4b5c6a8fd063e60ace752a82c0c0687a56a5c118d31308dada06`, the
+virtual-transaction barrier as shipped: one registration upsert, a captured virtual-transaction
+set and per-chunk generation checks.
+
+| Validation | Local macOS ARM64 | Native Linux x86_64 (i5-13500T) |
+|---|---:|---:|
+| Python | 3.13.14 | 3.13.13 |
+| Full `make checkall`, PostgreSQL 18.6 | 423 passed, 29 platform skips | 491 passed, 1 platform skip |
+| Randomized six-second gap checks included above | 10 seeds | 50 seeds |
+| PostgreSQL 16.14 feed/barrier/workflow/schema/CLI/upgrade tests | 111 passed | 111 passed |
+| Real Linux sandbox tests included above | Not applicable | 25 passed |
+| Clean base-wheel backfill/wait/ack smoke | Passed | Passed |
+
+Both capacity runs used eight workers, four producers, one million retained terminal tasks,
+180,000 live tasks at a target 3,000/s, and a second 105,000-task phase with a transaction held
+open for thirty seconds. Full durability was enabled. Local clients ran natively on macOS
+against Docker Desktop PostgreSQL (512 MiB shared buffers, 2 GiB WAL target); the Linux host ran
+native clients and Docker PostgreSQL (2 GiB shared buffers, 4 GiB WAL target). These are
+separate host measurements, not a controlled comparison of client platforms.
+
+| Measure | macOS | Linux |
+|---|---:|---:|
+| Backfilled snapshots / chunks | 1,047,675 / 212 | 1,033,562 / 209 |
+| Backfill duration | 12.12 s | 6.97 s |
+| Reconciled task identities | 1,180,000 | 1,180,000 |
+| Missing / unexpected identities | 0 / 0 | 0 / 0 |
+| Accepted live/snapshot duplicates | 35,049 | 20,785 |
+| Claim p99 around registration | 35.82 ms | 8.61 ms |
+| Completions per full 5 s interval during the blocker | 11,730–16,151 | 14,883–14,925 |
+| Contended consumer startup, including the 30 s blocker | 30.31 s | 30.11 s |
+| Lock polls / mean client query duration | 117 / 9.26 ms | 120 / 2.25 ms |
+| Maximum lock-poll client query duration | 143.04 ms | 8.39 ms |
+| Completion p99 / maximum while waiting | 149.31 / 281.05 ms | 88.13 / 118.25 ms |
+| Worker errors / bad task outcomes | 0 / 0 | 0 / 0 |
+| Clean worker exits | 8 / 8 | 8 / 8 |
+
+The consumer stayed pending for the held transaction, then completed; workers progressed in
+every measured interval. Poll durations include scheduling and transport and are not CPU-time
+measurements. Both runs left zero event heap bytes and zero dead tuples after two ordinary
+`VACUUM (ANALYZE, INDEX_CLEANUP ON)` cycles, with stable reusable index data; index files did
+not shrink to their initial empty size, which ordinary vacuum does not promise.
+[macOS report](results/feed-backfill-vxid-macos.json),
+[Linux report](results/feed-backfill-vxid-linux.json).
+
+## Release validation (0.5.0)
 
 Release source `a6c68e292ae7` passed the [CI matrix](https://github.com/dreo/fronta/actions/runs/35064552795)
 across Python 3.12–3.14, PostgreSQL 16/18 and Linux/macOS, including real Linux sandboxes and
@@ -18,12 +64,12 @@ The same physical host and durable profile used below ran source `a6c68e292ae7` 
 at 3,000 arrivals/s, with an unrelated write transaction held from minute one to minute three.
 It processed **1,800,000 tasks**, reconciled producer/completion identities, drained task/event
 backlogs to zero and exited all eight workers cleanly. Overall completion rate, including final
-drain, was **2,994.5/s**. Sampled backlog peaked at
-**4,311** and returned to its ordinary range after the hold.
+drain, was **2,994.5/s**. Sampled backlog peaked at **4,311** and returned to its ordinary range
+after the hold.
 
 This is a short diagnostic, so its report deliberately does not pass the three-hour acceptance
-grade. It verifies capacity and recovery on the final code; the earlier long run below provides
-the retention/storage evidence. [Final physical report](results/release-physical.json).
+grade. It verifies capacity and recovery on the final code; the long run below provides the
+retention/storage evidence. [Final physical report](results/release-physical.json).
 
 ## Release throughput
 
@@ -92,5 +138,6 @@ harmless. [Physical report](results/physical-soak.json), [grade](results/physica
 [provenance](results/provenance.json).
 
 Fronta uses ordinary tables with batched retention deletes. The stable recovered footprint did
-not justify an active/history split or partitioning. See [operating configuration](../docs/postgresql.md)
-for retention sizing, transaction hygiene and durable-write diagnostics.
+not justify an active/history split or partitioning. See
+[retention and transaction hygiene](../REFERENCE.md#retention-and-transaction-hygiene) for
+retention sizing and durable-write diagnostics.

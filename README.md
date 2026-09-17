@@ -1,281 +1,262 @@
 # Fronta
 
-Task queue on PostgreSQL for Python. Workers run `async def` handlers in-process and executables
-in bubblewrap sandboxes; an optional server exposes the queue over REST and MCP with a small
-dashboard.
-
-Fronta keeps its tables in a `fronta` schema of your own PostgreSQL database; there is no
-broker. PostgreSQL 18 is the default; versions 16+ remain supported.
-Workers claim rows with `SELECT … FOR UPDATE SKIP LOCKED`, hold leases renewed by
-heartbeats, and record every state change in one fenced statement, so the tasks of a crashed or
-stalled worker are reaped and retried while attempts remain. Priorities, scheduled runs, dedupe
-keys, retries with jittered backoff and concurrency limits (per task type and per key) are enforced
-in the database; attempt timeouts and cancellation by the worker.
-
-**Status:** alpha. The API and the schema can change between minor versions before 1.0 (see
-`CHANGELOG.md`). Linux or macOS, Python 3.12–3.14, PostgreSQL 18 by default (16+ supported).
-Sandboxed process workers require Linux.
-
-## Install
-
-```bash
-uv add fronta               # SDK + worker
-uv add "fronta[server]"     # + REST/MCP server and dashboard
+```text
+8888888888 8888888b.   .d88888b.  888b    888 88888888888     d8888
+888        888   Y88b d88P" "Y88b 8888b   888     888        d88888
+888        888    888 888     888 88888b  888     888       d88P888
+8888888    888   d88P 888     888 888Y88b 888     888      d88P 888
+888        8888888P"  888     888 888 Y88b888     888     d88P  888
+888        888 T88b   888     888 888  Y88888     888    d88P   888
+888        888  T88b  Y88b. .d88P 888   Y8888     888   d8888888888
+888        888   T88b  "Y88888P"  888    Y888     888  d88P     888
 ```
 
-`pip install fronta` works the same. The SDK, server, and workers containing only asyncio tasks are
-supported on Linux and macOS. A worker containing any process task needs Linux, `bwrap`
-(bubblewrap), `prlimit` (util-linux), and unprivileged user namespaces.
+Fronta is an **asyncio task queue for Python backed by PostgreSQL**: use it for background jobs
+and sandboxed tools alongside a Postgres application; choose a more mature queue or workflow
+platform when you need API stability or built-in orchestration.
 
-## Example
+**Alpha.** APIs and database schemas can change before 1.0; upgrades require stopping old
+workers and clients. The alternatives below have longer production histories.
+
+[Quick start](#quick-start) · [Comparison](#compare-the-options) · [Performance](#performance) ·
+[Reference](REFERENCE.md)
+
+## What it does
+
+- **PostgreSQL only.** The SDK and workers connect directly to PostgreSQL. No broker required.
+- **Asyncio tasks or processes.** Run Python libraries in `async def` tasks, or arbitrary
+  executables wrapped with `bubblewrap` on Linux.
+- **Transactional enqueue.** Commit tasks and application writes in the same transaction.
+- **Task controls.** Retries with backoff, timeouts, delayed runs, priorities, active-task
+  deduplication and per-type/per-key concurrency limits.
+- **Event feed.** Live task-state events with durable subscriptions and backfill. Acknowledge
+  events and enqueue follow-up tasks in one transaction. Workflow logic is your code.
+- **SQL and APIs.** Query state, progress, results and errors with SQL. Optional REST/MCP server
+  and dashboard.
+
+**Limits:** tasks can run more than once; external effects must tolerate retries. No built-in
+cron, rate limiting, workflow replay or task-output streaming. Queue traffic uses your database's
+capacity. [Details](REFERENCE.md).
+
+## Compare the options
+
+Self-hosted setups, checked September 2026. Every option also needs workers; the service column
+lists the infrastructure around them. PostgreSQL-only storage is not unique to Fronta.
+
+| Option | Services | Python and tools | Workflows and live data | Maturity / best fit |
+|---|---|---|---|---|
+| **Fronta** | PostgreSQL; optional API server | Native asyncio handlers; Linux sandboxed executables | Transactional task-state feed and backfill; application owns orchestration | **Alpha**; Python/Postgres apps that want a queue and own their workflow logic |
+| [Celery][celery] | Broker, commonly RabbitMQ or Redis; optional result backend | Python [process, thread or greenlet pools][celery-pools]; no standard asyncio pool | [Chains, groups and chords][celery-canvas]; periodic jobs and monitoring events | **Mature**; broad Python ecosystem, routing and worker-pool choices |
+| [Hatchet][hatchet] | PostgreSQL + engine/API; [RabbitMQ optional, embedded mode available][hatchet-embedded] | Async/sync Python and other language SDKs | Durable workflows, DAGs, cron and [output streams][hatchet-streams] | **Established workflow platform**; orchestration supplied by the engine |
+| [Windmill][windmill] | [PostgreSQL + server][windmill-hosting] | Multi-language scripts, including Python; configurable [nsjail sandbox][windmill-sandbox] | Flows, schedules, approvals and internal apps | **Established automation platform**; scripts, workflows and operator UIs together |
+| [Procrastinate][procrastinate] | PostgreSQL | Sync and native async Python tasks | [Periodic jobs, locks and Django integration][procrastinate-features] | **Established queue**; a close alternative for Python/Postgres jobs |
+
+For long-lived workflows with replay and signals, also consider [Temporal][temporal].
+
+## Performance
+
+Fronta batches database operations and runs async handlers concurrently. The checked-in
+**0.5.0 benchmarks** report these three-run medians with durable commits, macOS clients and
+PostgreSQL 18 in Docker, using eight workers unless noted:
+
+| Workload | Tasks/s | What is timed |
+|---|---:|---|
+| No-op tasks, default settings | 7,244 | Drain a preloaded backlog |
+| No-op tasks, concurrency 256 per worker | 32,887 | Drain a preloaded backlog |
+| Live producers + acknowledged completion feed | 3,063 | Enqueue, execute and consume completions |
+| 512 KiB inputs, four workers | 242 | Drain a preloaded backlog |
+
+These measure queue overhead, not real application or sandbox throughput. A separate ten-minute
+Linux run (i5-13500T, NVMe) completed 1.8 million tasks at **2,994.5/s including final drain**. The
+[reports](benchmarks/RESULTS.md) include hardware, settings, missed throughput targets and
+slowdowns under long transactions; [reproduce the workloads](benchmarks/README.md).
+
+**We have not benchmarked Fronta against these alternatives under the same conditions.**
+[Windmill's cross-engine benchmarks][workflow-benchmarks] use other workloads and omit Fronta.
+Compare the same handler, durability, concurrency and hardware before choosing on speed.
+
+## Quick start
+
+Requires **Python 3.12+** and **PostgreSQL 16+** (18 recommended). Python workers run on Linux
+and macOS; sandboxed process tasks require Linux. Windows is not supported.
+
+Install the package (`pip install fronta` also works), then initialize the database schema:
+
+```bash
+uv add fronta
+export FRONTA_DSN=postgresql://user:pass@localhost/app
+uv run fronta db init   # creates the fronta schema; safe to repeat
+```
+
+The database must exist and the role must be able to create the schema. Define a task and its
+worker:
 
 ```python
-# app/tasks.py
+# tasks.py
 import fronta
 from pydantic import BaseModel
 
 
-class Resize(BaseModel):
-    image_id: int
-    width: int
+class Text(BaseModel):
+    text: str
 
 
-@fronta.task("resize", input=Resize, max_attempts=5, attempt_timeout=120)
-async def resize(ctx: fronta.Context, job: Resize) -> dict[str, int]:
-    await ctx.progress({"stage": "download"})
-    ...  # idempotent work that honors CancelledError
-    return {"bytes": 12345}
+@fronta.task("word_count", input=Text, max_attempts=5, attempt_timeout=30)
+async def word_count(ctx: fronta.Context, job: Text) -> dict[str, int]:
+    await ctx.progress({"stage": "counting"})
+    return {"words": len(job.text.split())}
 
 
-worker = fronta.Worker([resize])
+worker = fronta.Worker([word_count])
 ```
 
-```bash
-export FRONTA_DSN=postgresql://user:pass@host/db   # the role must be able to create the schema
-fronta db init                    # creates schema `fronta`; safe to repeat
-fronta worker app.tasks:worker    # runs until SIGTERM/SIGINT
-```
+Run `uv run fronta worker tasks:worker` in one terminal. In another, with the same `FRONTA_DSN`,
+run `uv run python enqueue.py`:
 
 ```python
-# enqueue.py: any process that reaches the database
+# enqueue.py
 import asyncio
 
 import fronta
-from app.tasks import Resize, resize
+from tasks import Text, word_count
 
 
 async def main() -> None:
-    await fronta.open_pool()  # once, at application start
+    await fronta.open_pool()
     try:
-        task_id = await resize.enqueue(Resize(image_id=7, width=800), priority=5, key="resize-7")
+        task_id = await word_count.enqueue(Text(text="hello world"), key="example", priority=5)
         print(task_id)
     finally:
-        await fronta.close_pool()  # at application shutdown
+        await fronta.close_pool()
 
 
 asyncio.run(main())
 ```
 
-`enqueue(..., conn=conn)` joins a non-autocommit psycopg transaction instead of using the pool;
-an explicit `conn.transaction()` block also stays caller-owned. Otherwise the insert commits as
-one statement and Fronta sends a wake hint afterwards. Caller-owned enqueue uses transactional
-NOTIFY, which shares PostgreSQL's notification commit lock; batching enqueues in one transaction
-amortizes that cost.
-`key` dedupes: while a task with the same key is queued or running, `enqueue` returns its id;
-once that task has finished, the same key enqueues a new one.
+Read state, progress and result with `await fronta.get_task(task_id)`. In a service, open the
+pool at startup and close it at shutdown. Inputs are Pydantic models; results are JSON.
 
-A handler gets the validated input and a `Context` (`task_id`, `attempt`, `log`, `progress()`,
-`enqueue()`, `cancelled`, `metadata`, `state` from the worker lifespan). It must handle
-`asyncio.CancelledError` and be safe to run twice: after a lost lease the task runs again.
-Inputs are stored as the model's JSON by alias (the shape of the published schema) and validated
-again in JSON mode at claim, so strict and aliased fields survive the round trip; an input that
-would not, or an invalid argument (priority outside the integer range, NUL in a key, a naive
-`run_at`), is refused by `enqueue` with `InvalidInput` before anything is written.
+Pass `conn=conn` inside your own psycopg transaction to commit application writes and the
+enqueue together. Use `run_at=` with a timezone-aware datetime for scheduling. A `key`
+deduplicates only while a task with that key is queued or running; it is not permanent
+idempotency. Handlers must honor `asyncio.CancelledError` and be safe to run twice.
 
-## Event feed
+## Sandboxed processes
 
-Named subscriptions retain matching transitions in PostgreSQL until acknowledged. A workflow can
-enqueue a child and acknowledge its source event in the same database transaction:
+Run an executable in any language. The worker defines the command; callers supply only data.
+The process receives the input as JSON on stdin; other interfaces need a small adapter. This
+example needs a Linux worker with `jq`, `bubblewrap`, `util-linux` and unprivileged user
+namespaces. Add it to `tasks.py`, replacing the final worker declaration:
 
 ```python
+uppercase = fronta.process_task(
+    "uppercase",
+    ["/usr/bin/jq", "-r", ".text | ascii_upcase"],
+    input=Text,
+    sandbox=fronta.Sandbox(memory_bytes=128 << 20, cpu_time_s=10, max_pids=16),
+    max_concurrency=4,
+)
+
+worker = fronta.Worker([word_count, uppercase])
+```
+
+Enqueue with `await uppercase.enqueue(Text(text="hello world"))`. The result contains
+`exit_code`, `stdout`, `stderr` and `truncated`; here stdout is `"HELLO WORLD\n"`. Exit zero
+succeeds; other exits follow the retry policy.
+
+Sandboxes get a private `/work` and `/tmp`, allowlisted read-only host paths, a cleared
+environment and no network. CPU and address-space limits apply per process. Python handlers run
+in the worker's event loop without this isolation, so keep blocking or heavy CPU work out of
+them. [Sandbox contract and limits](REFERENCE.md#sandboxed-processes).
+
+## Event feed and workflows
+
+Tasks can enqueue children with `ctx.enqueue(...)`; those enqueues commit independently of the
+parent's outcome. For branching, joining or reacting to completions, run a consumer. Workflow
+rules and checkpoints stay in your code and your tables; Fronta does not replay workflow code
+or provide durable steps.
+
+This consumer chains **uppercase → word count**. Run `uv run python workflow.py` alongside the
+Linux worker:
+
+```python
+# workflow.py
+import asyncio
+
 import fronta
-from app.tasks import Notify, notify
+from tasks import Text, word_count
 
 
-async def run_workflow() -> None:
+async def main() -> None:
     async with fronta.subscribe(
-        "resize-workflow", states=[fronta.State.SUCCEEDED], types=["resize"]
+        "count-uppercase", types=["uppercase"], states=[fronta.State.SUCCEEDED], backfill=True
     ) as feed:
         async for batch in feed:
             for event in batch.events:
                 source = await fronta.get_task(event.id, conn=batch.conn)
-                await notify.enqueue(
-                    Notify(source_id=event.id, result=source.result),
-                    conn=batch.conn,
-                )
-            await batch.ack()  # commits both child enqueues and deletion of these events
+                await word_count.enqueue(Text(text=source.result["stdout"]), conn=batch.conn)
+            await batch.ack()  # child enqueues and acknowledgement commit together
+
+
+asyncio.run(main())
 ```
 
-`TaskEvent` contains `seq`, `id`, `type`, `state`, and `attempt`. Without acknowledgement the
-transaction rolls back and the events are delivered again. Multiple consumers may share a
-subscription; locked deliveries are skipped. Closing the consumer leaves its subscription and
-backlog intact; `await fronta.unsubscribe(name)` deletes both.
-
-Each pull orders visible, unlocked rows by sequence. Sequence allocation precedes commit, so a
-lower sequence may arrive later; no cursor advances past it. Registration does not backfill old
-transitions or transitions whose statements already read the subscriptions. `get_task()` reads
-the latest row, which may be newer than the event or already purged. Unacknowledged events expire
-`retention_s` after the event, with warnings in worker logs; terminal tasks expire that interval
-after finishing.
-
-Database reactions using `batch.conn` and `ack()` commit atomically. External effects remain at
-least once; use `(subscription, seq)` as their idempotency key. The feed and its limitations are
-specified in [the reference](docs/reference.md#event-feed).
-
-Keep transaction and feed batch blocks short: a long open transaction can delay PostgreSQL
-vacuum cleanup and slow the queue. Retention and this operating constraint are explained in
-[the reference](docs/reference.md#event-feed).
-
-On Linux, a sandboxed process task with a placeholder executable:
-
-```python
-class Convert(BaseModel):
-    source: str
-
-
-convert = fronta.process_task(
-    "convert",
-    ["/usr/bin/convert-tool", "--from-stdin"],  # reads the JSON input on stdin
-    input=Convert,
-    sandbox=fronta.Sandbox(memory_bytes=512 << 20, cpu_time_s=60, max_pids=16),
-    max_concurrency=4,
-)
-```
-
-The process runs in a private tmpfs `/work` without network; its result is
-`{"exit_code", "stdout", "stderr", "truncated"}`. Exit code 0 means the task succeeded; anything
-else fails the attempt.
+Without an ack, the batch rolls back and is delivered again. Reuse the subscription name across
+restarts; several consumers can share it. `backfill=True` projects retained matching tasks into
+a new subscription (a duration limits terminal history); interrupted backfills resume, and
+startup waits for older transactions without pausing the queue. Delivery is at least once, and
+live events can overlap backfill, so real side effects need idempotency.
+[Feed guarantees, dedupe and backfill](REFERENCE.md#event-feed).
 
 ## Server
 
-```bash
-FRONTA_SERVER_TOKEN=... fronta server      # 127.0.0.1:8000
-```
+Install `fronta[server]`, set `FRONTA_SERVER_TOKEN`, and run `uv run fronta server`. It serves
+the dashboard at `/`, REST under `/api/v1` and MCP at `/mcp` on `127.0.0.1:8000`. REST and MCP
+require `Authorization: Bearer <token>` and expose enqueue, lookup, listing, cancellation,
+pause/resume, requeue and statistics. [Endpoints and reverse proxy setup](REFERENCE.md#server).
 
-REST under `/api/v1` (task types, enqueue, get, list, cancel, pause/resume, requeue, stats),
-MCP at `/mcp`, dashboard at `/`. The SDK also exposes `pause(type)`, `resume(type)`, `requeue(id)`,
-and `stats()`. Enqueue accepts optional JSON `metadata`, available on the row and `ctx.metadata`;
-children inherit none automatically. Listing and cancellation go through the server.
-`FRONTA_SERVER_TOKEN` is required (the server never runs open:
-even on loopback a browser could be made to cancel or enqueue tasks); every REST and MCP request
-sends it as `Authorization: Bearer <token>`. Put a TLS-terminating reverse proxy in front of it
-outside a private network; a proxy that forwards the public hostname must be listed in
-`FRONTA_SERVER_ALLOWED_HOSTS` (and its origin in `FRONTA_SERVER_ALLOWED_ORIGINS`), or the MCP
-endpoint's DNS-rebinding protection answers 421. Endpoints, inputs, error codes and a proxy
-example: [docs/reference.md](https://github.com/dreo/fronta/blob/main/docs/reference.md#server).
+## Operating
 
-## Deploy
-
-One database, any number of workers, optionally a server. Each process reads `FRONTA_*`
-environment variables; `FRONTA_DSN` is the only required one (and only where Fronta opens its own
-connections: enqueueing through your own connection needs none). A worker holds up to
-`FRONTA_POOL_SIZE` connections, one listener, one lease-renewal connection, and one lazy
-hint connection. Workers, the server and SDK share hints for the same database and event loop;
-each event-feed consumer needs one more connection. Reserved renewals keep pool saturation from
-blocking heartbeats. Run workers under a supervisor that restarts them: a worker
-exits 0 after a graceful stop, 70 when a handler ignores cancellation or blocks the event loop, and
-71 when one of its background loops dies of an unexpected error.
-
-```ini
-# /etc/systemd/system/fronta-worker.service
-[Unit]
-Description=Fronta worker
-After=network-online.target
-
-[Service]
-User=app
-WorkingDirectory=/srv/app
-# FRONTA_DSN=... and other FRONTA_* variables; readable by root only (mode 0600)
-EnvironmentFile=/etc/fronta/worker.env
-ExecStart=/srv/app/.venv/bin/fronta worker app.tasks:worker
-# SIGTERM goes to the worker only, which stops its sandboxes itself; SIGKILL to everything
-KillMode=mixed
-Restart=always
-RestartSec=2
-TimeoutStopSec=120
-
-[Install]
-WantedBy=multi-user.target
-```
-
-`systemctl enable --now fronta-worker`. On `SIGTERM` the worker stops claiming, lets running
-attempts finish for `FRONTA_GRACE_S`, then stops the rest (another grace period for cooperative
-cancellation, then a kill) and records every outcome before it exits. That takes at most
-`2 × FRONTA_GRACE_S + 6 × FRONTA_KILL_TIMEOUT_S + 1` (91 s with the defaults 30 s and 5 s) unless the
-database is unreachable or a sandbox cannot be killed: then the worker keeps trying rather than
-lose an outcome, and systemd's `SIGKILL` at `TimeoutStopSec` ends it. That loses no data:
-sandboxes die with the worker and unrecorded attempts are retried when their lease expires.
-
-Claims and completions batch automatically: up to free execution slots and 256 rows per claim,
-with a 512 KiB stored-input budget (one oversized input is still admitted). Completions flush
-immediately when idle and coalesce while a write is in flight. Multi-type workers use the same
-path. Idle polling backs off from 50 ms to one second; wake hints and local child enqueues reset
-it. Worker-level heartbeats renew due attempts in chunks of 1,000. Task writes retain synchronous
-commit; wake, cancel and feed hints use a separate connection.
-
-Upgrade steps and API/configuration details: [reference](docs/reference.md).
-For sustained traffic, start with the [PostgreSQL 18 configuration](docs/postgresql.md).
-
-The final release processed **1.8 million tasks at roughly 3,000/s** in a ten-minute physical
-Linux diagnostic, recovered after an injected transaction hold, and drained with exact accounting.
-An earlier three-hour run established stable retained storage after recovery. [Results and limits](benchmarks/RESULTS.md)
-identify the tested source versions, throughput comparisons and limits of the shorter release check.
-
-## Changing a task's contract
-
-Claims route by name, so a worker of an older version happily claims inputs written for a newer
-one and fails them permanently when the schema is incompatible, and the last worker to start
-publishes the limits and schema for the whole fleet. The safe procedure for an incompatible change
-is a new name: declare `resize_v2`, start its workers, switch producers, and keep the old workers
-until the old name's queued, scheduled and retrying work has drained. A same-name change must stay
-compatible for the whole overlap, or needs a drained, coordinated deployment. Dedupe and
-concurrency keys are scoped by name, so a versioned rollout splits their domains (the combined
-concurrency of both names can exceed either limit); do not produce the same business work under
-both names. The SDK snapshots the retry policy of the definition it enqueues with; the server
-snapshots the published one.
-
-## Not covered
-
-- Exactly-once side effects: a worker stalled past its lease may still be running while the task
-  is retried elsewhere; the stale attempt's writes to Fronta are rejected, its other effects are not.
-- A built-in workflow engine, chains, or periodic tasks (only `run_at`). External consumers can implement
-  workflows using named event subscriptions.
-- Arbitrary schema migrations: init applies the additive changes shipped by this version;
-  incompatible future changes need release-specific deployment instructions.
-- Durable workflow steps, inline execution, rate limits, priority aging, tenant fairness, task
-  expiry, or cancellation propagation to children.
-- Windows.
-- Sandboxed process tasks on macOS. A worker containing one fails its startup check with a clear
-  platform error; run that worker on Linux.
+- **Execution is at least once.** Lease loss can cause duplicates: make external effects
+  idempotent.
+- **Retention.** Finished tasks and unacknowledged events expire after seven days by default.
+  Keep transactions short and size retention for your workload.
+- **Deployment.** Run workers under a supervisor that restarts them; configure everything with
+  `FRONTA_*` variables. [Settings](REFERENCE.md#configuration) and
+  [PostgreSQL configuration](REFERENCE.md#postgresql-configuration).
+- **Upgrades.** No backward compatibility between releases: stop old clients, run
+  `fronta db init`, start the new release. [Procedure](REFERENCE.md#initialization-and-upgrades).
+- **Changing a task's contract.** Workers route by name. For an incompatible change, use a new
+  name such as `word_count_v2`, start its workers, switch producers, then drain the old name.
+  Dedupe and concurrency limits are scoped by name, so their domains split.
 
 ## Development
 
 ```bash
 uv sync --all-extras
+# Use a test database separate from your application.
 docker run -d --name fronta-test-pg -e POSTGRES_USER=fronta -e POSTGRES_PASSWORD=fronta \
   -e POSTGRES_DB=fronta -p 127.0.0.1:5439:5432 postgres:18
 export FRONTA_TEST_DSN=postgresql://fronta:fronta@127.0.0.1:5439/fronta
-make check       # lint, format, types, architecture, deps (also the git pre-commit hook)
-make checkall    # check + the full test suite + pip-audit
+make check       # lint, formatting, types, architecture and dependencies
+make checkall    # also tests and the dependency audit
 ```
 
-CI runs the full `make checkall` gate once on every pull request and push to `main`; compatibility
-legs cover Python 3.12–3.14, lower dependency bounds with PostgreSQL 16, real Linux process
-sandboxes, and the portable SDK, asyncio worker, and server on macOS without repeating the
-stress/browser tiers. To release: set the version (`uv version X.Y.Z`), add the
-CHANGELOG section, merge, then push the tag `vX.Y.Z` from that `main` commit; the gate runs again,
-the package goes to PyPI and a GitHub release is created. `SPEC.md` is the contract.
+[Reference](REFERENCE.md) · [Changelog](CHANGELOG.md) · [Benchmarks](benchmarks/README.md) ·
+[Public API](src/fronta/__init__.py). MIT licensed; the dashboard bundles Alpine.js
+([notice](THIRD_PARTY_NOTICES.md)). Report vulnerabilities privately to the maintainer listed in
+`pyproject.toml`.
 
-## License
-
-MIT. The dashboard bundles Alpine.js (MIT); see `THIRD_PARTY_NOTICES.md`.
+[celery]: https://docs.celeryq.dev/en/stable/getting-started/introduction.html
+[celery-pools]: https://docs.celeryq.dev/en/stable/userguide/concurrency/index.html
+[celery-canvas]: https://docs.celeryq.dev/en/stable/userguide/canvas.html
+[hatchet]: https://docs.hatchet.run/v1
+[hatchet-embedded]: https://docs.hatchet.run/v1/embedded
+[hatchet-streams]: https://docs.hatchet.run/v1/advanced-tasks/streaming
+[windmill]: https://www.windmill.dev/docs/intro
+[windmill-hosting]: https://www.windmill.dev/docs/advanced/self_host
+[windmill-sandbox]: https://www.windmill.dev/docs/advanced/security_isolation
+[procrastinate]: https://procrastinate.readthedocs.io/en/stable/howto/basics/tasks.html
+[procrastinate-features]: https://procrastinate.readthedocs.io/en/stable/howto/advanced.html
+[temporal]: https://docs.temporal.io/develop/python
+[workflow-benchmarks]: https://www.windmill.dev/docs/misc/benchmarks/competitors

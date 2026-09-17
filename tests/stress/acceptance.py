@@ -1,4 +1,4 @@
-"""Sustained correctness gates from WP6/WP8; uses a disposable database."""
+"""Sustained correctness gates; each run uses a disposable database."""
 
 # ruff: noqa: T201
 
@@ -24,10 +24,10 @@ from psycopg.conninfo import make_conninfo
 
 from fronta import Settings, Worker, runtime, store, task
 from tests.conftest import running_all, wait_until
-from tests.stress.__main__ import db_snapshot, scalar, seed, source_fingerprint
+from tests.stress.__main__ import db_snapshot, rows, scalar, seed, source_fingerprint
+from tests.stress.backfill import measure as backfill
 from tests.stress.hint_crash import measure as hint_crash
 from tests.stress.latency import measure
-from tests.stress.rollout import rehearse
 from tests.stress.worker import Input
 
 
@@ -170,13 +170,15 @@ async def main(args):
         await admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
         try:
             async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
-                if args.phase != "rollout":
-                    await store.init_schema(conn)
+                await store.init_schema(conn)
                 report["postgres"] = await scalar(conn, "SELECT version()")
-                if args.phase == "rollout":
-                    report["result"] = await rehearse(
-                        conn, dsn, args.legacy.resolve(), args.output.with_suffix("")
+                if args.phase == "backfill":
+                    report["durability"] = await rows(
+                        conn,
+                        "SELECT name,setting FROM pg_settings WHERE name IN "
+                        "('fsync','synchronous_commit','full_page_writes','shared_buffers','max_wal_size')",
                     )
+                    report["result"] = await backfill(conn, dsn, args, args.output.with_suffix(""))
                 else:
                     fn = {
                         "renewals": renewals,
@@ -204,16 +206,27 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "phase", choices=("renewals", "contention", "latency", "hint-crash", "rollout")
+        "phase",
+        choices=(
+            "renewals",
+            "contention",
+            "latency",
+            "hint-crash",
+            "backfill",
+        ),
     )
     parser.add_argument("--seconds", type=float)
     parser.add_argument("--repetitions", type=int, default=30)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--legacy", type=Path)
+    parser.add_argument("--matrix", type=Path, default=Path("benchmarks/matrix.json"))
+    parser.add_argument("--history", type=int, default=1_000_000)
+    parser.add_argument("--rate", type=int, default=3000)
     args = parser.parse_args()
     if args.phase in ("renewals", "contention") and not args.seconds:
         parser.error("--seconds is required for sustained checks")
-    if args.phase == "rollout" and args.legacy is None:
-        parser.error("--legacy must name an extracted legacy checkout")
+    if args.phase == "backfill":
+        args.seconds = 60 if args.seconds is None else args.seconds
+        if args.history < 1 or args.rate < 1 or not 15 <= args.seconds <= sys.float_info.max:
+            parser.error("positive history/rate and at least 15 seconds of live load are required")
     with contextlib.suppress(KeyboardInterrupt):
         sys.exit(asyncio.run(main(args)))

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import subprocess
 import sys
@@ -13,7 +15,10 @@ import psycopg
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from pydantic import BaseModel
 
+from fronta import State, Worker, store, subscribe, task
+from fronta import feed as feed_module
 from tests.conftest import REPO, free_port, fronta_cli, wait_until, worker_env
 from tests.workers import In, sleep_task
 
@@ -204,3 +209,160 @@ def test_worker_rejects_bad_targets(dsn):
         )
         assert result.returncode != 0, target
         assert "Error" in result.stderr or "Usage" in result.stderr
+
+
+class Listing(BaseModel):
+    listing_id: int = 1
+    children: int = 8
+
+
+@contextlib.asynccontextmanager
+async def fan_in_workflow(conn, settings, run_worker, children):
+    await conn.execute(
+        "CREATE TABLE listing_jobs (listing_id bigint PRIMARY KEY, "
+        "remaining int CHECK (remaining>=0));"
+        "CREATE TABLE listing_parts (listing_id bigint, task_id bigint, attempt int, state text, "
+        "PRIMARY KEY (listing_id, task_id, attempt, state));"
+        "CREATE TABLE listing_done (listing_id bigint PRIMARY KEY)"
+    )
+
+    @task("subtask", input=Listing)
+    async def subtask(ctx, inp):
+        del ctx
+        return inp.listing_id
+
+    @task("finalize", input=Listing)
+    async def finalize(ctx, inp):
+        del ctx
+        async with await psycopg.AsyncConnection.connect(settings.dsn) as caller:
+            await caller.execute("INSERT INTO listing_done VALUES (%s)", (inp.listing_id,))
+
+    @task("listing", input=Listing)
+    async def listing(ctx, inp):
+        del ctx
+        async with await psycopg.AsyncConnection.connect(settings.dsn) as caller:
+            await caller.execute(
+                "INSERT INTO listing_jobs VALUES (%s, %s)", (inp.listing_id, inp.children)
+            )
+            for _ in range(inp.children):
+                await subtask.enqueue(inp, conn=caller)
+
+    try:
+        async with run_worker(Worker([listing, subtask, finalize], settings=settings)):
+            await listing.enqueue(Listing(children=children), conn=conn)
+
+            async def children_finished():
+                return (
+                    await (
+                        await conn.execute(
+                            "SELECT count(*) FROM fronta.tasks "
+                            "WHERE type='subtask' AND state='succeeded'"
+                        )
+                    ).fetchone()
+                )[0] == children
+
+            await wait_until(children_finished)
+            yield finalize
+    finally:
+        await conn.execute("DROP TABLE listing_parts, listing_done, listing_jobs")
+
+
+async def react_to_children(settings, finalize, *, backfill=None):
+    async with subscribe(
+        "fanin", settings=settings, types=["subtask"], states=[State.SUCCEEDED], backfill=backfill
+    ) as feed:
+        async for batch in feed:
+            finished = False
+            for event in batch.events:
+                row = await store.get_task(batch.conn, event.id)
+                listing_id = row.input["listing_id"]
+                inserted = await (
+                    await batch.conn.execute(
+                        "INSERT INTO listing_parts VALUES (%s, %s, %s, %s) "
+                        "ON CONFLICT DO NOTHING RETURNING task_id",
+                        (listing_id, event.id, event.attempt, event.state),
+                    )
+                ).fetchone()
+                if inserted is None:
+                    continue
+                remaining = await (
+                    await batch.conn.execute(
+                        "UPDATE listing_jobs SET remaining=remaining-1 "
+                        "WHERE listing_id=%s RETURNING remaining",
+                        (listing_id,),
+                    )
+                ).fetchone()
+                if remaining[0] == 0:
+                    await finalize.enqueue(Listing(listing_id=listing_id), conn=batch.conn)
+                    finished = True
+            await batch.ack()
+            if finished:
+                return
+
+
+async def assert_finalized_once(conn, children):
+    async def done():
+        return (await (await conn.execute("SELECT count(*) FROM listing_done")).fetchone())[0] == 1
+
+    await wait_until(done)
+    assert (
+        await (
+            await conn.execute("SELECT count(*) FROM fronta.tasks WHERE type='finalize'")
+        ).fetchone()
+    )[0] == 1
+    assert await (await conn.execute("SELECT remaining FROM listing_jobs")).fetchall() == [(0,)]
+    assert (await (await conn.execute("SELECT count(*) FROM listing_parts")).fetchone())[
+        0
+    ] == children
+
+
+@pytest.mark.parametrize("backfill", [None, True])
+async def test_fan_in_completes_when_consumer_starts_late(conn, settings, run_worker, backfill):
+    async with fan_in_workflow(conn, settings, run_worker, 8) as finalize:
+        if backfill is None:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(react_to_children(settings, finalize), 5)
+            assert (await (await conn.execute("SELECT count(*) FROM listing_done")).fetchone())[
+                0
+            ] == 0
+            assert await (await conn.execute("SELECT remaining FROM listing_jobs")).fetchall() == [
+                (8,)
+            ]
+            assert await (await conn.execute("SELECT task_id FROM fronta.events")).fetchall() == []
+        else:
+            await asyncio.wait_for(react_to_children(settings, finalize, backfill=True), 10)
+            await assert_finalized_once(conn, 8)
+
+
+async def test_fan_in_survives_consumer_restart_mid_backfill(
+    conn, settings, run_worker, monkeypatch
+):
+    async with fan_in_workflow(conn, settings, run_worker, 40) as finalize:
+        monkeypatch.setattr(feed_module, "_BACKFILL_CHUNK", 5)
+        original, chunks = store.backfill_chunk, 0
+
+        async def crash(c, *args):
+            nonlocal chunks
+            result = await original(c, *args)
+            chunks += 1
+            if chunks == 2:
+                await c.close()
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "backfill_chunk", crash)
+            with pytest.raises(psycopg.OperationalError):
+                await react_to_children(settings, finalize, backfill=True)
+        assert (await (await conn.execute("SELECT count(*) FROM fronta.events")).fetchone())[
+            0
+        ] == 10
+        assert (
+            await (
+                await conn.execute("SELECT backfill FROM fronta.subscriptions WHERE name='fanin'")
+            ).fetchone()
+        )[0] is not None
+        await asyncio.wait_for(react_to_children(settings, finalize), 10)
+        await assert_finalized_once(conn, 40)
+        assert await (
+            await conn.execute("SELECT backfill FROM fronta.subscriptions WHERE name='fanin'")
+        ).fetchone() == (None,)

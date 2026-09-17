@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from fronta import State, Worker, store, task
+from fronta import State, Worker, store, subscribe, task
 from tests.conftest import wait_until
 
 
@@ -85,3 +85,35 @@ async def test_dedupe_and_concurrency_keys_are_scoped_by_name(conn):
     assert await thing_v2.enqueue(ThingV2(a=2, b="y"), key="k") == second
     cur = await conn.execute("SELECT count(*) FROM fronta.tasks WHERE state = %s", (State.QUEUED,))
     assert (await cur.fetchone())[0] == 2
+
+
+@pytest.mark.usefixtures("sdk")
+async def test_backfill_after_upgrade_preserves_history_and_live_events(conn, settings, run_worker):
+    async with run_worker(Worker([thing_v1], settings=settings)):
+        old = [await thing_v1.enqueue(ThingV1(a=i)) for i in range(8)]
+        await wait_until(lambda: _all_succeeded(conn, old))
+    # Upgrade with workers stopped, then reconcile retained history and new completions.
+    await conn.execute(
+        "ALTER TABLE fronta.subscriptions DROP COLUMN backfill, DROP COLUMN generation"
+    )
+    try:
+        await store.init_schema(conn)
+        await store.init_schema(conn)
+        async with run_worker(Worker([thing_v1], settings=settings)):
+            async with subscribe("upgraded", settings=settings, backfill=True) as feed:
+                new = [await thing_v1.enqueue(ThingV1(a=i)) for i in range(8, 16)]
+                await wait_until(lambda: _all_succeeded(conn, new))
+                received = set()
+                while received != set(old + new):
+                    batch = await anext(feed)
+                    received.update(e.id for e in batch.events)
+                    assert all(e.state is State.SUCCEEDED and e.attempt == 1 for e in batch.events)
+                    await batch.ack()
+                assert (await store.stats(conn))["subscriptions"][0]["backfill_pending"] is False
+            assert (
+                await (
+                    await conn.execute("SELECT value FROM fronta.meta WHERE key='schema_version'")
+                ).fetchone()
+            )[0] == "1"
+    finally:
+        await store.init_schema(conn)

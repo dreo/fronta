@@ -50,8 +50,8 @@ from tests.stress.worker import definition
 
 
 class Fleet:
-    def __init__(self, dsn, config, directory, *, repo=REPO):
-        self.directory, self.repo = directory.resolve(), repo
+    def __init__(self, dsn, config, directory):
+        self.directory = directory.resolve()
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("FRONTA_")}
         self.env.update(FRONTA_DSN=dsn, FRONTA_STRESS_CONFIG=json.dumps(config))
         self.active, self.all, self.files, self.handles = [], [], [], []
@@ -63,7 +63,7 @@ class Fleet:
         self.handles.append(log)
         process = subprocess.Popen(  # noqa: S603  # fixed module, isolated DB
             [sys.executable, "-m", "tests.stress.worker", str(output)],
-            cwd=self.repo,
+            cwd=REPO,
             env=self.env,
             stdout=log,
             stderr=log,

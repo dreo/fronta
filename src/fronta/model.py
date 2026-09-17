@@ -90,11 +90,6 @@ class Backoff:
             msg = f"backoff.base_s ({self.base_s}) must not exceed backoff.cap_s ({self.cap_s})"
             raise ValueError(msg)
 
-    def delay_bounds(self, retry: int) -> tuple[float, float]:
-        """Inclusive `[min, max]` delay for retry `retry` (1-based), as the SQL computes it."""
-        nominal = min(self.cap_s, self.base_s * self.factor ** min(retry - 1, 64))
-        return nominal / 2, nominal
-
     def to_json(self) -> dict[str, float]:
         return {"base_s": self.base_s, "factor": self.factor, "cap_s": self.cap_s}
 

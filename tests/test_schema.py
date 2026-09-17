@@ -3,6 +3,7 @@
 import asyncio
 import re
 from importlib import resources
+from uuid import UUID
 
 import psycopg
 import pytest
@@ -30,6 +31,53 @@ async def test_init_is_idempotent(conn):
         "task_types",
         "tasks",
     ]
+    assert await (
+        await conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema='fronta' AND table_name='subscriptions' AND column_name='backfill'"
+        )
+    ).fetchall() == [("jsonb", "YES")]
+    assert await (
+        await conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema='fronta' AND table_name='subscriptions' "
+            "AND column_name='generation'"
+        )
+    ).fetchall() == [("uuid", "NO")]
+
+
+async def test_db_init_adds_feed_columns_without_a_schema_version_change(conn, dsn):
+    await conn.execute(
+        "ALTER TABLE fronta.subscriptions DROP COLUMN backfill, DROP COLUMN generation"
+    )
+    await conn.execute("INSERT INTO fronta.subscriptions (name) VALUES ('existing'), ('other')")
+    version = await (
+        await conn.execute("SELECT value FROM fronta.meta WHERE key='schema_version'")
+    ).fetchone()
+    try:
+        generations = None
+        for _ in range(2):
+            result = await asyncio.to_thread(CliRunner().invoke, main, ["db", "init", "--dsn", dsn])
+            assert result.exit_code == 0, result.output
+            assert "ready" in result.output
+            rows = await (
+                await conn.execute(
+                    "SELECT name, generation, backfill FROM fronta.subscriptions ORDER BY name"
+                )
+            ).fetchall()
+            assert all(isinstance(row[1], UUID) and row[2] is None for row in rows)
+            assert len({row[1] for row in rows}) == 2
+            if generations is not None:
+                assert rows == generations
+            generations = rows
+        assert (
+            await (
+                await conn.execute("SELECT value FROM fronta.meta WHERE key='schema_version'")
+            ).fetchone()
+            == version
+        )
+    finally:
+        await store.init_schema(conn)
 
 
 @pytest.mark.parametrize("first_table", ["task_types", "events"])
@@ -73,26 +121,6 @@ def test_db_init_reports_connection_errors():
     )
     assert result.exit_code != 0
     assert "database error" in result.output
-
-
-async def test_init_refreshes_a_warmed_legacy_function_after_adding_columns(conn, dsn):
-    task_id = await store.enqueue(conn, NewTask("legacy", "{}", Policy()))
-    await conn.execute("ALTER TABLE fronta.tasks DROP COLUMN metadata")
-    await conn.execute(
-        "CREATE FUNCTION fronta.claim_v0() RETURNS SETOF fronta.tasks LANGUAGE plpgsql "
-        "AS $$ BEGIN RETURN QUERY SELECT * FROM fronta.tasks; END $$"
-    )
-    try:
-        async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as legacy:
-            assert await (await legacy.execute("SELECT id FROM fronta.claim_v0()")).fetchall() == [
-                (task_id,)
-            ]
-            await store.init_schema(conn)
-            assert await (await legacy.execute("SELECT id FROM fronta.claim_v0()")).fetchall() == [
-                (task_id,)
-            ]
-    finally:
-        await store.init_schema(conn, prune=True)
 
 
 @pytest.mark.parametrize(

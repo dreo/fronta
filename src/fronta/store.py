@@ -13,7 +13,7 @@ import json
 import re
 import time
 from importlib import resources
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import psycopg
 from psycopg import sql
@@ -39,7 +39,7 @@ from fronta.model import (
 )
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from uuid import UUID
 
     from fronta.model import Completion, NewTask, TaskFilter, TaskTypeSpec
@@ -51,7 +51,17 @@ SCHEMA_VERSION = 1
 
 WAKE_CHANNEL = "fronta_wake"
 CANCEL_CHANNEL = "fronta_cancel"
-FEED_CHANNEL = "fronta_feed"
+
+
+class Backfill(TypedDict):
+    since: str | None
+    pending: dict[str, int]
+
+
+class Subscription(TypedDict):
+    generation: UUID
+    backfill: Backfill | None
+
 
 _TASK_COLUMNS = (
     "id", "type", "state", "priority", "key", "concurrency_key", "input", "result", "error",
@@ -225,10 +235,22 @@ SELECT jsonb_build_object(
     ) x), '[]'::jsonb),
     'subscriptions', coalesce((SELECT jsonb_agg(to_jsonb(x) ORDER BY x.name) FROM (
         SELECT s.name, count(e.seq) AS backlog,
+            s.backfill IS NOT NULL AS backfill_pending,
             extract(epoch FROM now()-min(e.created_at)) AS oldest_event_age_s
         FROM fronta.subscriptions s LEFT JOIN fronta.events e ON e.subscription=s.name
         GROUP BY s.name
     ) x), '[]'::jsonb))
+""")
+
+_BACKFILL = sql.SQL("""
+WITH ins AS (
+    INSERT INTO fronta.events (subscription, task_id, type, state, attempt)
+    SELECT %(name)s, t.id, t.type, t.state, t.attempt FROM fronta.tasks t
+    WHERE t.state = %(state)s AND t.id > %(after)s
+      AND (%(types)s::text[] IS NULL OR t.type = ANY(%(types)s::text[]))
+      AND (%(since)s::timestamptz IS NULL OR t.finished_at >= %(since)s)
+    ORDER BY t.id LIMIT %(limit)s RETURNING task_id)
+SELECT count(*), max(task_id) FROM ins
 """)
 
 _PURGE_TASKS = sql.SQL("""
@@ -514,8 +536,7 @@ async def claim(  # noqa: PLR0913  # distinct claim inputs
             },
             binary=True,
         )
-        rows = [_task(rec) for rec in await cur.fetchall()]
-        return rows
+        return [_task(rec) for rec in await cur.fetchall()]
 
 
 async def heartbeat(
@@ -607,6 +628,117 @@ async def stats(conn: Conn) -> dict[str, Any]:
     row = await (await conn.execute(_STATS)).fetchone()
     assert row is not None  # noqa: S101  # SELECT always returns one JSON object
     return dict(row[0])
+
+
+async def register_subscription(
+    conn: Conn,
+    name: str,
+    states: list[str],
+    types: list[str] | None,
+    backfill: bool | float = False,
+) -> Subscription:
+    # Only INSERT installs a generation and marker. The generation outlives backfill and
+    # filter updates, so a consumer can never attach to a replacement with the same name.
+    window_s = None if isinstance(backfill, bool) else backfill
+    row = await (
+        await conn.execute(
+            "INSERT INTO fronta.subscriptions (name, states, types, backfill) "
+            "VALUES (%s, %s, %s, CASE WHEN %s THEN "
+            "jsonb_build_object('since', "
+            "CASE WHEN %s::float8 IS NOT NULL THEN "
+            "clock_timestamp() - make_interval(secs => %s) END, 'pending', %s::jsonb) END) "
+            "ON CONFLICT (name) DO UPDATE SET states = EXCLUDED.states, types = EXCLUDED.types "
+            "RETURNING generation, backfill",
+            (
+                name,
+                states,
+                types,
+                backfill is not False,
+                window_s,
+                window_s,
+                json.dumps(dict.fromkeys(states, 0)),
+            ),
+        )
+    ).fetchone()
+    assert row is not None  # noqa: S101  # upsert returns the marker
+    return Subscription(
+        generation=row[0],
+        backfill=None
+        if row[1] is None
+        else Backfill(since=row[1]["since"], pending=row[1]["pending"]),
+    )
+
+
+async def backfill_blockers(
+    conn: Conn, transactions: list[str] | None = None
+) -> list[tuple[str, int, str | None, str | None, timedelta | None]]:
+    """Capture owned virtual IDs, or inspect the remaining locks of a fixed captured set."""
+    # Virtual IDs exist before snapshots/real XIDs and survive idle-in-transaction. Unlike
+    # activity timestamps they need neither monitoring privileges nor track_activities.
+    # pg_locks.database is NULL for virtual IDs: activity's public pid/datname scope the DB.
+    # The other activity columns are diagnostics only and may be hidden or disabled.
+    return await (
+        await conn.execute(
+            "SELECT l.virtualxid, l.pid, a.usename, a.application_name, "
+            "clock_timestamp() - a.xact_start FROM pg_locks l "
+            "JOIN pg_stat_activity a ON a.pid = l.pid "
+            "WHERE l.locktype = 'virtualxid' AND l.mode = 'ExclusiveLock' AND l.granted "
+            "AND l.pid <> pg_backend_pid() AND a.datname = current_database() "
+            "AND (%s::text[] IS NULL OR l.virtualxid = ANY(%s::text[]))",
+            (transactions, transactions),
+        )
+    ).fetchall()
+
+
+async def backfill_chunk(
+    conn: Conn, name: str, generation: UUID, limit: int
+) -> tuple[int, bool] | None:
+    """Commit events and progress together; None means the registration was removed/replaced."""
+    async with conn.transaction():
+        row = await (
+            await conn.execute(
+                "SELECT generation, types, backfill FROM fronta.subscriptions "
+                "WHERE name = %s FOR NO KEY UPDATE",
+                (name,),
+            )
+        ).fetchone()
+        # Validate identity even when the replacement's backfill has already finished.
+        if row is None or row[0] != generation:
+            return None
+        if row[2] is None:
+            return 0, False
+        _, types, marker = row
+        pending = marker["pending"]
+        count = 0
+        if pending:
+            state = min(pending)
+            after = pending[state]
+            inserted = await (
+                await conn.execute(
+                    _BACKFILL,
+                    {
+                        "name": name,
+                        "state": state,
+                        "after": after,
+                        "types": types,
+                        "since": None
+                        if state in (State.QUEUED, State.RUNNING)
+                        else marker["since"],
+                        "limit": limit,
+                    },
+                )
+            ).fetchone()
+            assert inserted is not None  # noqa: S101  # aggregate always returns a row
+            count, last_id = inserted
+            if count < limit:
+                del pending[state]
+            else:
+                pending[state] = last_id
+        await conn.execute(
+            "UPDATE fronta.subscriptions SET backfill = %s::jsonb WHERE name = %s",
+            (json.dumps(marker) if pending else None, name),
+        )
+        return count, bool(pending)
 
 
 async def purge_tasks(conn: Conn, retention_s: float, batch: int) -> int:

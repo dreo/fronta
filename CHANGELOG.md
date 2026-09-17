@@ -3,7 +3,46 @@
 All notable changes to Fronta are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/). Pre-1.0, minor versions may change the schema and the
-contracts; follow each release's database initialization instructions.
+contracts. Backward compatibility with older Fronta releases or schemas is not supported;
+follow each release's database initialization instructions.
+
+## [0.6.0] - 2026-09-17
+
+### Added
+
+- Opt-in `subscribe(..., backfill=True)` to project retained matching task rows, or a seconds /
+  `timedelta` window for terminal rows. Backfill uses short resumable chunks, coordinates concurrent
+  creators and consumers, and finishes before the feed opens. Live/backfill duplicates require
+  `(id, attempt, state)` dedupe during backfill or idempotent reactions.
+- Registration waits on a captured set of virtual transaction locks without stalling unrelated
+  queue work. Resuming consumers capture afresh; permanent registration generations prevent an old
+  consumer from backfilling or consuming a replacement registration. Long waits report blocking
+  sessions. Prepared transactions and imported snapshots are outside the backfill guarantee.
+- Per-subscription `backfill_pending` in `stats()`, and backfill progress logging.
+
+### Changed
+
+- README now covers use cases, alternatives, measured performance and setup.
+- `fronta db init` adds nullable `subscriptions.backfill` JSONB and a permanent `generation` UUID
+  without changing the schema version or transition statements. Run it before using any 0.6.0
+  client. Subscriptions require both columns, and statistics require `backfill`; there are no
+  fallbacks for the 0.5.0 schema. Stop old clients, initialize the database, then start the new
+  release; mixed-version operation is unsupported.
+
+### Fixed
+
+- Keep the pidfd syscall fallback for Linux Python builds that omit the standard-library wrappers,
+  including uv-managed Python. Process ownership checks and pidfd-based signalling are preserved.
+- Deleted subscriptions end their consumers permanently, including when the name is recreated
+  during startup, after backfill completes, or between batches. Obsolete consumers waiting on a
+  registration barrier stop without waiting for unrelated transactions to finish.
+
+### Removed
+
+- Legacy claim-function refresh logic and mixed-version stress rehearsals.
+- `Backoff.delay_bounds()`, which only the tests used; read `run_at` on the task row instead.
+- `SPEC.md`, `SECURITY.md`, `docs/postgresql.md` and `docs/reference.md`: their content lives in
+  the top-level `REFERENCE.md`.
 
 ## [0.5.0] - 2026-09-16
 
@@ -49,7 +88,7 @@ contracts; follow each release's database initialization instructions.
 `subscribe_events()` is replaced by `subscribe(name)` with explicit batch acknowledgements.
 Pause producers, gracefully stop 0.4.x workers, install this version, run `fronta db init`, then
 restart connections and the fleet. Use this pause for the initial schema change. See the complete
-[upgrade instructions](docs/reference.md#database-initialization-and-upgrades).
+[upgrade instructions](REFERENCE.md#initialization-and-upgrades).
 
 ## [0.4.0] - 2026-09-05
 
@@ -95,7 +134,7 @@ restart connections and the fleet. Use this pause for the initial schema change.
 
 ### Added
 
-- `docs/reference.md`: reverse proxy example, the stored input representation, and the procedure
+- `REFERENCE.md`: reverse proxy example, the stored input representation, and the procedure
   for rolling out an incompatible task contract (versioned names).
 
 ## [0.3.0] - 2026-08-29

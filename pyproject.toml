@@ -1,6 +1,6 @@
 [project]
 name = "fronta"
-version = "0.5.0"
+version = "0.6.0"
 description = "Distributed task queue for asyncio tasks and sandboxed processes"
 readme = "README.md"
 authors = [
@@ -95,6 +95,8 @@ convention = "google"
 strict = true
 packages = ["fronta"]
 mypy_path = "src"
+# The sandbox uses Linux-only stdlib APIs (pidfds); check them the same way on every host.
+platform = "linux"
 
 [tool.importlinter]
 root_package = "fronta"
@@ -114,11 +116,9 @@ layers = [
     "fronta.model | fronta.config | fronta.errors",
 ]
 
-[tool.deptry]
-# Add per-rule ignores only with a justifying comment.
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
 testpaths = ["tests"]
+markers = ["slow: randomized sustained-load checks (50 seeds on Linux, 10 elsewhere)"]

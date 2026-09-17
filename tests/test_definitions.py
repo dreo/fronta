@@ -26,7 +26,7 @@ from fronta import (
 )
 from fronta.cli import main
 from fronta.model import Executor, TaskTypeSpec
-from tests.conftest import fronta_cli
+from tests.conftest import delay_bounds, fronta_cli
 from tests.workers import In, Out, limited_task, sleep_task
 
 
@@ -87,10 +87,10 @@ def test_invalid_backoff_numbers_are_rejected(kwargs):
 
 def test_backoff_delay_bounds_follow_the_formula_and_the_cap():
     backoff = Backoff(base_s=1.0, factor=2.0, cap_s=5.0)
-    assert backoff.delay_bounds(1) == (0.5, 1.0)
-    assert backoff.delay_bounds(3) == (2.0, 4.0)
-    assert backoff.delay_bounds(4) == (2.5, 5.0)
-    assert backoff.delay_bounds(1000) == (2.5, 5.0)
+    assert delay_bounds(backoff, 1) == (0.5, 1.0)
+    assert delay_bounds(backoff, 3) == (2.0, 4.0)
+    assert delay_bounds(backoff, 4) == (2.5, 5.0)
+    assert delay_bounds(backoff, 1000) == (2.5, 5.0)
 
 
 def test_sandbox_rejects_reserved_env_relative_binds_and_non_positive_limits():
