@@ -6,6 +6,24 @@ All notable changes to Fronta are documented here. The format follows
 contracts. Backward compatibility with older Fronta releases or schemas is not supported;
 follow each release's database initialization instructions.
 
+## [0.6.1] - 2026-11-13
+
+Dependency maintenance. No API or schema changes: 0.6.0 databases need no `fronta db init`, and
+0.6.0 and 0.6.1 clients can run side by side.
+
+### Security
+
+- The `server` extra requires `mcp>=2.2`. Earlier MCP SDK releases let clients accumulate
+  StreamableHTTP sessions without bound (GHSA-84m7-p3x7-pcfv), a resource-exhaustion path on the
+  authenticated `/mcp` endpoint. Upgrade server installs with `pip install -U "fronta[server]"`.
+  Fronta authenticates with its own bearer token, so the PyJWT advisories fixed in 2.14/2.15 do
+  not reach its code paths; upgrade PyJWT anyway if your environment still pins an older release.
+
+### Changed
+
+- Tested against current dependency releases, including FastAPI 0.162, Starlette 1.10,
+  uvicorn 0.54, psycopg 3.3.9 and pydantic 2.14. Declared lower bounds are otherwise unchanged.
+
 ## [0.6.0] - 2026-09-17
 
 ### Added
